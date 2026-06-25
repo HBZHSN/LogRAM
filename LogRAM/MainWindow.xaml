@@ -293,6 +293,7 @@
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
@@ -309,26 +310,100 @@
                         <ToggleButton x:Name="RegexButton"
                                       Grid.Column="1"
                                       Width="44"
-                                      Margin="0,0,6,0"
+                                      Margin="0,0,4,0"
                                       VerticalAlignment="Center"
                                       Content=".*"
                                       ToolTip="正则表达式" />
 
+                        <Button x:Name="AdvancedSearchButton"
+                                Grid.Column="2"
+                                Margin="0,0,6,0"
+                                VerticalAlignment="Center"
+                                Click="AdvancedSearchButton_Click"
+                                Content="高级"
+                                ToolTip="高级搜索：自定义包含/排除关键词" />
+
+                        <Popup x:Name="AdvancedSearchPopup"
+                               PlacementTarget="{Binding ElementName=AdvancedSearchButton}"
+                               Placement="Top"
+                               StaysOpen="False"
+                               AllowsTransparency="True"
+                               Opened="AdvancedSearchPopup_Opened">
+                            <Border Margin="0,0,0,4"
+                                    Background="{DynamicResource PanelBackBrush}"
+                                    BorderBrush="{DynamicResource StrongBorderBrush}"
+                                    BorderThickness="1"
+                                    Padding="12">
+                                <StackPanel Width="320">
+                                    <TextBlock Text="高级搜索"
+                                               Foreground="{DynamicResource TextBrush}"
+                                               FontWeight="SemiBold"
+                                               Margin="0,0,0,2" />
+                                    <TextBlock Text="命中条件：包含任一“包含”关键词，且不包含任何“排除”关键词。仅支持 ASCII 关键词。"
+                                               Foreground="{DynamicResource MutedTextBrush}"
+                                               FontSize="11"
+                                               TextWrapping="Wrap"
+                                               Margin="0,0,0,8" />
+
+                                    <TextBlock Text="包含任一（OR）"
+                                               Foreground="{DynamicResource TextBrush}"
+                                               Margin="0,0,0,4" />
+                                    <StackPanel x:Name="AdvancedIncludePanel" />
+                                    <Button x:Name="AddIncludeButton"
+                                            Content="+ 添加包含"
+                                            HorizontalAlignment="Left"
+                                            Margin="0,6,0,0"
+                                            Click="AddIncludeKeyword_Click" />
+
+                                    <Separator Margin="0,12,0,8"
+                                               Background="{DynamicResource BorderBrush}" />
+
+                                    <TextBlock Text="排除任一（NOT）"
+                                               Foreground="{DynamicResource TextBrush}"
+                                               Margin="0,0,0,4" />
+                                    <StackPanel x:Name="AdvancedExcludePanel" />
+                                    <Button x:Name="AddExcludeButton"
+                                            Content="+ 添加排除"
+                                            HorizontalAlignment="Left"
+                                            Margin="0,6,0,0"
+                                            Click="AddExcludeKeyword_Click" />
+
+                                    <Separator Margin="0,12,0,8"
+                                               Background="{DynamicResource BorderBrush}" />
+
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button Grid.Column="0"
+                                                Content="关闭"
+                                                HorizontalAlignment="Left"
+                                                Click="AdvancedSearchClose_Click" />
+                                        <Button Grid.Column="1"
+                                                Content="搜索"
+                                                MinWidth="64"
+                                                Click="AdvancedSearchRun_Click" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                        </Popup>
+
                         <TextBlock x:Name="SearchResultStatusTextBlock"
-                                   Grid.Column="2"
+                                   Grid.Column="3"
                                    Margin="6,0,0,0"
                                    Foreground="{DynamicResource MutedTextBrush}"
                                    VerticalAlignment="Center" />
 
                         <TextBox x:Name="SearchTextBox"
-                                 Grid.Column="3"
+                                 Grid.Column="4"
                                  Margin="12,0,8,0"
                                  VerticalAlignment="Center"
                                  KeyDown="SearchTextBox_KeyDown"
                                  ToolTip="搜索文本或正则" />
 
                         <Button x:Name="SearchButton"
-                                Grid.Column="4"
+                                Grid.Column="5"
                                 Margin="0,0,6,0"
                                 VerticalAlignment="Center"
                                 Click="SearchButton_Click"
@@ -336,7 +411,7 @@
                                 ToolTip="开始搜索" />
 
                         <Button x:Name="CancelSearchButton"
-                                Grid.Column="5"
+                                Grid.Column="6"
                                 VerticalAlignment="Center"
                                 Click="CancelSearchButton_Click"
                                 Content="取消"

@@ -21,6 +21,7 @@ public sealed class LogFileDocument : IDisposable
     private const int ChunkSize = 1 << ChunkBits;
     private const int ChunkMask = ChunkSize - 1;
     private const int SearchBatchSize = 1024;
+    private const int AdvancedSubBlockSize = 256 * 1024;
     private const long ProgressBytes = 64L * 1024L * 1024L;
     private const long ParallelPlainSearchThreshold = 256L * 1024L * 1024L;
 
@@ -56,6 +57,8 @@ public sealed class LogFileDocument : IDisposable
     public LogTextEncoding EncodingKind { get; }
 
     public long LineCount => _lineStarts.Count;
+
+    public long MemoryUsage => FileSize + (long)_lineStarts.Count * sizeof(long);
 
     public static LogFileDocument Open(string filePath, LogTextEncoding? encodingOverride)
     {
@@ -288,6 +291,311 @@ public sealed class LogFileDocument : IDisposable
             progress?.Report(new LogSearchProgress(FileSize, FileSize, matchCount));
             return new LogSearchSummary(matchCount);
         }, cancellationToken);
+    }
+
+    public Task<LogSearchSummary> AdvancedSearchAsync(
+        IReadOnlyList<string> includeTerms,
+        IReadOnlyList<string> excludeTerms,
+        bool caseSensitive,
+        Action<IReadOnlyList<LogSearchResult>> onBatch,
+        IProgress<LogSearchProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var includes = BuildAdvancedPatterns(includeTerms, caseSensitive);
+        var excludes = BuildAdvancedPatterns(excludeTerms, caseSensitive);
+
+        if (includes.Length == 0 && excludes.Length == 0)
+        {
+            throw new ArgumentException("Advanced search requires at least one keyword.", nameof(includeTerms));
+        }
+
+        return Task.Run(() =>
+        {
+            if (FileSize == 0 || _lineStarts.Count == 0)
+            {
+                progress?.Report(new LogSearchProgress(FileSize, FileSize, 0));
+                return new LogSearchSummary(0);
+            }
+
+            return RunAdvancedSearch(includes, excludes, caseSensitive, onBatch, progress, cancellationToken);
+        }, cancellationToken);
+    }
+
+    private LogSearchSummary RunAdvancedSearch(
+        AdvancedPattern[] includes,
+        AdvancedPattern[] excludes,
+        bool caseSensitive,
+        Action<IReadOnlyList<LogSearchResult>> onBatch,
+        IProgress<LogSearchProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var lineCount = _lineStarts.Count;
+        var includeHit = new byte[lineCount];
+        var excludeHit = new byte[lineCount];
+        var scannedBytes = 0L;
+
+        var parallelOptions = new ParallelOptions
+        {
+            CancellationToken = cancellationToken,
+            MaxDegreeOfParallelism = Math.Max(1, Math.Min(Environment.ProcessorCount, _chunks.Length))
+        };
+
+        Parallel.For(0, _chunks.Length, parallelOptions, chunkIndex =>
+        {
+            ScanChunkAdvanced(chunkIndex, includes, excludes, caseSensitive, includeHit, excludeHit, cancellationToken);
+
+            var done = Interlocked.Add(ref scannedBytes, _chunks[chunkIndex].Length);
+            progress?.Report(new LogSearchProgress(done, FileSize, 0));
+        });
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var hasIncludes = includes.Length > 0;
+        var batch = new List<LogSearchResult>(SearchBatchSize);
+        var matchCount = 0L;
+
+        for (var lineIndex = 0; lineIndex < lineCount; lineIndex++)
+        {
+            if ((lineIndex & 0xFFFF) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (hasIncludes && includeHit[lineIndex] == 0)
+            {
+                continue;
+            }
+
+            if (excludeHit[lineIndex] != 0)
+            {
+                continue;
+            }
+
+            matchCount++;
+            batch.Add(new LogSearchResult(lineIndex + 1L, _lineStarts[lineIndex], this));
+
+            if (batch.Count >= SearchBatchSize)
+            {
+                onBatch(batch.ToArray());
+                batch.Clear();
+            }
+        }
+
+        if (batch.Count > 0)
+        {
+            onBatch(batch.ToArray());
+        }
+
+        progress?.Report(new LogSearchProgress(FileSize, FileSize, matchCount));
+        return new LogSearchSummary(matchCount);
+    }
+
+    private void ScanChunkAdvanced(
+        int chunkIndex,
+        AdvancedPattern[] includes,
+        AdvancedPattern[] excludes,
+        bool caseSensitive,
+        byte[] includeHit,
+        byte[] excludeHit,
+        CancellationToken cancellationToken)
+    {
+        var chunk = _chunks[chunkIndex];
+        var chunkBaseOffset = (long)chunkIndex << ChunkBits;
+        var startLineIndex = GetLineIndexForOffset(chunkBaseOffset);
+
+        var includeLine = new int[includes.Length];
+        var excludeLine = new int[excludes.Length];
+        Array.Fill(includeLine, startLineIndex);
+        Array.Fill(excludeLine, startLineIndex);
+
+        for (var subStart = 0; subStart < chunk.Length; subStart += AdvancedSubBlockSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var subEnd = Math.Min(subStart + AdvancedSubBlockSize, chunk.Length);
+
+            for (var p = 0; p < includes.Length; p++)
+            {
+                ScanWindowForPattern(chunk, chunkBaseOffset, includes[p], caseSensitive, subStart, subEnd, ref includeLine[p], includeHit);
+            }
+
+            for (var p = 0; p < excludes.Length; p++)
+            {
+                ScanWindowForPattern(chunk, chunkBaseOffset, excludes[p], caseSensitive, subStart, subEnd, ref excludeLine[p], excludeHit);
+            }
+        }
+
+        for (var p = 0; p < includes.Length; p++)
+        {
+            ScanChunkTailForPattern(chunkIndex, includes[p], caseSensitive, ref includeLine[p], includeHit);
+        }
+
+        for (var p = 0; p < excludes.Length; p++)
+        {
+            ScanChunkTailForPattern(chunkIndex, excludes[p], caseSensitive, ref excludeLine[p], excludeHit);
+        }
+    }
+
+    private void ScanWindowForPattern(
+        byte[] chunk,
+        long chunkBaseOffset,
+        AdvancedPattern pattern,
+        bool caseSensitive,
+        int windowStart,
+        int windowEnd,
+        ref int currentLineIndex,
+        byte[] hit)
+    {
+        var bytes = pattern.Bytes;
+        var maxStartInChunk = chunk.Length - bytes.Length;
+        var startLimit = Math.Min(windowEnd - 1, maxStartInChunk);
+        if (startLimit < windowStart)
+        {
+            return;
+        }
+
+        if (caseSensitive)
+        {
+            var spanEnd = Math.Min(chunk.Length, startLimit + bytes.Length);
+            var searchOffset = windowStart;
+
+            while (searchOffset <= startLimit)
+            {
+                var spanLength = spanEnd - searchOffset;
+                if (spanLength < bytes.Length)
+                {
+                    break;
+                }
+
+                var relativeIndex = chunk.AsSpan(searchOffset, spanLength).IndexOf(bytes);
+                if (relativeIndex < 0)
+                {
+                    break;
+                }
+
+                var localOffset = searchOffset + relativeIndex;
+                AdvanceLineIndex(ref currentLineIndex, chunkBaseOffset + localOffset);
+                hit[currentLineIndex] = 1;
+                searchOffset = GetNextSearchOffset(chunkBaseOffset, chunk.Length, localOffset, currentLineIndex);
+            }
+
+            return;
+        }
+
+        var anchor = pattern.Anchor;
+        var maxAnchorOffset = startLimit + anchor.PatternOffset;
+        var anchorSearchOffset = windowStart + anchor.PatternOffset;
+
+        while (anchorSearchOffset <= maxAnchorOffset)
+        {
+            var relativeIndex = IndexOfAsciiIgnoreCase(
+                chunk.AsSpan(anchorSearchOffset, maxAnchorOffset - anchorSearchOffset + 1),
+                anchor.NormalizedValue);
+            if (relativeIndex < 0)
+            {
+                break;
+            }
+
+            var anchorOffset = anchorSearchOffset + relativeIndex;
+            var localOffset = anchorOffset - anchor.PatternOffset;
+            if (AsciiBytesMatchAt(chunk.AsSpan(localOffset, bytes.Length), bytes))
+            {
+                AdvanceLineIndex(ref currentLineIndex, chunkBaseOffset + localOffset);
+                hit[currentLineIndex] = 1;
+                anchorSearchOffset = GetNextSearchOffset(chunkBaseOffset, chunk.Length, localOffset, currentLineIndex) + anchor.PatternOffset;
+            }
+            else
+            {
+                anchorSearchOffset = anchorOffset + 1;
+            }
+        }
+    }
+
+    private void ScanChunkTailForPattern(
+        int chunkIndex,
+        AdvancedPattern pattern,
+        bool caseSensitive,
+        ref int currentLineIndex,
+        byte[] hit)
+    {
+        var chunk = _chunks[chunkIndex];
+        var chunkBaseOffset = (long)chunkIndex << ChunkBits;
+        var bytes = pattern.Bytes;
+        var tailStart = Math.Max(0, chunk.Length - bytes.Length + 1);
+
+        for (var localOffset = tailStart; localOffset < chunk.Length; localOffset++)
+        {
+            var absoluteOffset = chunkBaseOffset + localOffset;
+            if (absoluteOffset + bytes.Length > FileSize)
+            {
+                break;
+            }
+
+            if (!BytesMatchAt(absoluteOffset, bytes, caseSensitive))
+            {
+                continue;
+            }
+
+            AdvanceLineIndex(ref currentLineIndex, absoluteOffset);
+            hit[currentLineIndex] = 1;
+        }
+    }
+
+    private void AdvanceLineIndex(ref int currentLineIndex, long absoluteOffset)
+    {
+        while (currentLineIndex + 1 < _lineStarts.Count && _lineStarts[currentLineIndex + 1] <= absoluteOffset)
+        {
+            currentLineIndex++;
+        }
+    }
+
+    private AdvancedPattern[] BuildAdvancedPatterns(IReadOnlyList<string>? terms, bool caseSensitive)
+    {
+        if (terms is null || terms.Count == 0)
+        {
+            return Array.Empty<AdvancedPattern>();
+        }
+
+        var patterns = new List<AdvancedPattern>(terms.Count);
+        foreach (var term in terms)
+        {
+            if (string.IsNullOrEmpty(term))
+            {
+                continue;
+            }
+
+            var raw = _encoding.GetBytes(term);
+            if (raw.Length == 0)
+            {
+                continue;
+            }
+
+            if (caseSensitive || !ContainsAsciiLetter(raw))
+            {
+                patterns.Add(new AdvancedPattern(raw, default));
+            }
+            else
+            {
+                var normalized = NormalizeAsciiPattern(raw);
+                var anchor = CreateAsciiSearchAnchors(normalized)[0];
+                patterns.Add(new AdvancedPattern(normalized, anchor));
+            }
+        }
+
+        return patterns.ToArray();
+    }
+
+    private readonly struct AdvancedPattern
+    {
+        public AdvancedPattern(byte[] bytes, AsciiSearchAnchor anchor)
+        {
+            Bytes = bytes;
+            Anchor = anchor;
+        }
+
+        public byte[] Bytes { get; }
+
+        public AsciiSearchAnchor Anchor { get; }
     }
 
     private LogSearchSummary SearchPlainBytes(
