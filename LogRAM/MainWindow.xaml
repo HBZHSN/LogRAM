@@ -19,7 +19,7 @@
         PreviewDragOver="Window_PreviewDragOver"
         PreviewDrop="Window_PreviewDrop">
 
-    <Grid x:Name="RootGrid" Background="{DynamicResource WindowBackBrush}">
+    <Grid x:Name="RootGrid" Background="{DynamicResource WindowBackBrush}" SizeChanged="RootGrid_SizeChanged">
         <Grid.Resources>
             <Style x:Key="LineNumberBoxStyle" TargetType="{x:Type TextBox}">
                 <Setter Property="IsReadOnly" Value="True" />

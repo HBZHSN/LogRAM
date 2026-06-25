@@ -83,6 +83,14 @@ public sealed partial class MainWindow : Window
     private int _searchTopIndex;
     private bool _isDraggingSearchScrollThumb;
     private double _searchScrollDragOffsetY;
+    private double _logMaxContentWidth;
+    private double _searchMaxContentWidth;
+    private bool _logReserveHScroll;
+    private bool _searchReserveHScroll;
+    private bool _logHScrollStatePending;
+    private bool _searchHScrollStatePending;
+    private ScrollViewer? _logContentScrollViewer;
+    private ScrollViewer? _searchContentScrollViewer;
     private AppTheme _currentTheme = AppTheme.Dark;
     private bool _isUpdatingThemeToggle;
     private readonly AppSettings _settings = AppSettings.Load();
@@ -633,6 +641,25 @@ public sealed partial class MainWindow : Window
         UpdateLogHighlight();
     }
 
+    private void RootGrid_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        UpdateSearchResultsMaxHeight();
+    }
+
+    // 限制搜索结果栏的最高高度，确保日志主区域至少保留 MinHeight，避免底部栏被挤出屏幕
+    private void UpdateSearchResultsMaxHeight()
+    {
+        if (RootGrid.ActualHeight <= 0)
+        {
+            return;
+        }
+
+        var rows = RootGrid.RowDefinitions;
+        var reserved = rows[0].Height.Value + rows[2].Height.Value + rows[4].Height.Value + MainLogRow.MinHeight;
+        var max = RootGrid.ActualHeight - reserved;
+        SearchResultsRow.MaxHeight = Math.Max(SearchResultsRow.MinHeight, max);
+    }
+
     private void SearchContentBox_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         UpdateSearchPageLineCount(e.NewSize.Height);
@@ -641,7 +668,8 @@ public sealed partial class MainWindow : Window
     private void UpdateSearchPageLineCount(double viewportHeight)
     {
         var lineHeight = GetSearchContentLineHeight();
-        var usableHeight = viewportHeight - SearchContentBox.Padding.Top - SearchContentBox.Padding.Bottom - HorizontalScrollBarHeight;
+        var reserve = _searchReserveHScroll ? HorizontalScrollBarHeight : 0;
+        var usableHeight = viewportHeight - SearchContentBox.Padding.Top - SearchContentBox.Padding.Bottom - reserve;
         var newCount = Math.Max(MinPageLineCount, (int)(usableHeight / lineHeight));
         if (newCount == _searchPageLineCount)
         {
@@ -849,7 +877,8 @@ public sealed partial class MainWindow : Window
     private void UpdatePageLineCount(double viewportHeight)
     {
         var lineHeight = GetLogContentLineHeight();
-        var usableHeight = viewportHeight - LogContentBox.Padding.Top - LogContentBox.Padding.Bottom;
+        var reserve = _logReserveHScroll ? HorizontalScrollBarHeight : 0;
+        var usableHeight = viewportHeight - LogContentBox.Padding.Top - LogContentBox.Padding.Bottom - reserve;
         var newCount = Math.Max(MinPageLineCount, (int)(usableHeight / lineHeight));
         if (newCount == _pageLineCount)
         {
@@ -873,6 +902,115 @@ public sealed partial class MainWindow : Window
     {
         var lineHeight = LogContentBox.FontFamily.LineSpacing * LogContentBox.FontSize;
         return lineHeight > 0 ? lineHeight : LogLineHeight;
+    }
+
+    private static ScrollViewer? FindContentScrollViewer(DependencyObject root)
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is ScrollViewer scrollViewer)
+            {
+                return scrollViewer;
+            }
+
+            var nested = FindContentScrollViewer(child);
+            if (nested is not null)
+            {
+                return nested;
+            }
+        }
+
+        return null;
+    }
+
+    private void ResetLogHorizontalScroll()
+    {
+        _logMaxContentWidth = 0;
+        _logReserveHScroll = false;
+        LogContentBox.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+    }
+
+    private void ResetSearchHorizontalScroll()
+    {
+        _searchMaxContentWidth = 0;
+        _searchReserveHScroll = false;
+        SearchContentBox.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+    }
+
+    private void ScheduleLogHorizontalScrollState()
+    {
+        if (_logHScrollStatePending)
+        {
+            return;
+        }
+
+        _logHScrollStatePending = true;
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(UpdateLogHorizontalScrollState));
+    }
+
+    private void ScheduleSearchHorizontalScrollState()
+    {
+        if (_searchHScrollStatePending)
+        {
+            return;
+        }
+
+        _searchHScrollStatePending = true;
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(UpdateSearchHorizontalScrollState));
+    }
+
+    private void UpdateLogHorizontalScrollState()
+    {
+        _logHScrollStatePending = false;
+        _logContentScrollViewer ??= FindContentScrollViewer(LogContentBox);
+        var scrollViewer = _logContentScrollViewer;
+        if (scrollViewer is null)
+        {
+            return;
+        }
+
+        if (scrollViewer.ExtentWidth > _logMaxContentWidth)
+        {
+            _logMaxContentWidth = scrollViewer.ExtentWidth;
+        }
+
+        var needScroll = _logMaxContentWidth > scrollViewer.ViewportWidth + 0.5;
+        LogContentBox.HorizontalScrollBarVisibility =
+            needScroll ? ScrollBarVisibility.Visible : ScrollBarVisibility.Auto;
+
+        if (needScroll != _logReserveHScroll)
+        {
+            _logReserveHScroll = needScroll;
+            UpdatePageLineCount(LogContentBox.ActualHeight);
+        }
+    }
+
+    private void UpdateSearchHorizontalScrollState()
+    {
+        _searchHScrollStatePending = false;
+        _searchContentScrollViewer ??= FindContentScrollViewer(SearchContentBox);
+        var scrollViewer = _searchContentScrollViewer;
+        if (scrollViewer is null)
+        {
+            return;
+        }
+
+        if (scrollViewer.ExtentWidth > _searchMaxContentWidth)
+        {
+            _searchMaxContentWidth = scrollViewer.ExtentWidth;
+        }
+
+        var needScroll = _searchMaxContentWidth > scrollViewer.ViewportWidth + 0.5;
+        SearchContentBox.HorizontalScrollBarVisibility =
+            needScroll ? ScrollBarVisibility.Visible : ScrollBarVisibility.Auto;
+
+        if (needScroll != _searchReserveHScroll)
+        {
+            _searchReserveHScroll = needScroll;
+            UpdateSearchPageLineCount(SearchContentBox.ActualHeight);
+        }
     }
 
     private void ReloadCurrentPage()
@@ -987,6 +1125,8 @@ public sealed partial class MainWindow : Window
             _highlightedLineNumber = null;
             _logLines.Clear();
             _searchResults.Clear();
+            ResetLogHorizontalScroll();
+            ResetSearchHorizontalScroll();
             RefreshLogTextBoxes();
             ClearSearchTextBoxes();
             ConfigureScrollBar();
@@ -1085,6 +1225,7 @@ public sealed partial class MainWindow : Window
         _searchCts = searchCts;
         _isSearching = true;
         _searchResults.Clear();
+        ResetSearchHorizontalScroll();
         ClearSearchTextBoxes();
         SearchProgressBar.Value = 0;
         SearchProgressBar.Visibility = Visibility.Visible;
@@ -1181,6 +1322,7 @@ public sealed partial class MainWindow : Window
         LogLineNumberBox.Text = numbers.ToString();
         LogContentBox.Text = content.ToString();
         UpdateLogHighlight();
+        ScheduleLogHorizontalScrollState();
     }
 
     private void RefreshSearchTextBoxes()
@@ -1216,6 +1358,7 @@ public sealed partial class MainWindow : Window
 
         SearchLineNumberBox.Text = numbers.ToString();
         SearchContentBox.Text = content.ToString();
+        ScheduleSearchHorizontalScrollState();
     }
 
     private void ClampSearchTopIndex()
