@@ -14,7 +14,10 @@
         Background="{DynamicResource WindowBackBrush}"
         Foreground="{DynamicResource TextBrush}"
         SnapsToDevicePixels="True"
-        UseLayoutRounding="True">
+        UseLayoutRounding="True"
+        AllowDrop="True"
+        PreviewDragOver="Window_PreviewDragOver"
+        PreviewDrop="Window_PreviewDrop">
 
     <Grid x:Name="RootGrid" Background="{DynamicResource WindowBackBrush}">
         <Grid.Resources>
@@ -101,15 +104,25 @@
                     <ComboBoxItem Content="GBK" />
                 </ComboBox>
 
-                <TextBlock Grid.Column="0"
-                           Grid.ColumnSpan="6"
-                           Text="LogRAM"
-                           Foreground="{DynamicResource MutedTextBrush}"
-                           FontWeight="SemiBold"
-                           FontSize="15"
-                           HorizontalAlignment="Center"
-                           VerticalAlignment="Center"
-                           IsHitTestVisible="False" />
+                <StackPanel Grid.Column="0"
+                            Grid.ColumnSpan="6"
+                            Orientation="Horizontal"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            IsHitTestVisible="False">
+                    <TextBlock Text="LogRAM"
+                               Foreground="{DynamicResource MutedTextBrush}"
+                               FontWeight="SemiBold"
+                               FontSize="15"
+                               VerticalAlignment="Center" />
+                    <TextBlock Text="FAST IS EVERYTHING"
+                               Margin="8,5,0,0"
+                               Foreground="{DynamicResource MutedTextBrush}"
+                               Opacity="0.6"
+                               FontWeight="SemiBold"
+                               FontSize="10"
+                               VerticalAlignment="Center" />
+                </StackPanel>
 
                 <Button x:Name="SettingsButton"
                         Grid.Column="4"
@@ -131,24 +144,37 @@
                             BorderThickness="1"
                             Padding="12">
                         <StackPanel Width="260">
-                            <TextBlock Text="字体"
+                            <TextBlock x:Name="FontLabel"
+                                       Text="字体"
                                        Foreground="{DynamicResource TextBrush}"
                                        Margin="0,0,0,4" />
                             <ComboBox x:Name="FontFamilyComboBox"
                                       SelectionChanged="FontFamilyComboBox_SelectionChanged" />
-                            <TextBlock Text="字号"
+                            <TextBlock x:Name="FontSizeLabel"
+                                       Text="字号"
                                        Foreground="{DynamicResource TextBrush}"
                                        Margin="0,10,0,4" />
                             <ComboBox x:Name="FontSizeComboBox"
                                       SelectionChanged="FontSizeComboBox_SelectionChanged" />
+                            <TextBlock x:Name="LanguageLabel"
+                                       Text="语言"
+                                       Foreground="{DynamicResource TextBrush}"
+                                       Margin="0,10,0,4" />
+                            <ComboBox x:Name="LanguageComboBox"
+                                      SelectionChanged="LanguageComboBox_SelectionChanged">
+                                <ComboBoxItem Content="中文" />
+                                <ComboBoxItem Content="English" />
+                            </ComboBox>
 
                             <Separator Margin="0,12,0,8"
                                        Background="{DynamicResource BorderBrush}" />
 
-                            <TextBlock Text="文件类型绑定"
+                            <TextBlock x:Name="FileAssocLabel"
+                                       Text="文件类型绑定"
                                        Foreground="{DynamicResource TextBrush}"
                                        Margin="0,0,0,4" />
-                            <TextBlock Text="绑定后可通过右键或双击直接使用 LogRAM 打开以下类型文件"
+                            <TextBlock x:Name="FileAssocHintLabel"
+                                       Text="绑定后可通过右键或双击直接使用 LogRAM 打开以下类型文件"
                                        Foreground="{DynamicResource MutedTextBrush}"
                                        FontSize="11"
                                        TextWrapping="Wrap"
@@ -229,8 +255,8 @@
                              SizeChanged="LogContentBox_SizeChanged">
                         <TextBox.ContextMenu>
                             <ContextMenu>
-                                <MenuItem Header="复制" Command="Copy" />
-                                <MenuItem Header="全选" Command="SelectAll" />
+                                <MenuItem x:Name="LogCopyMenuItem" Header="复制" Command="Copy" />
+                                <MenuItem x:Name="LogSelectAllMenuItem" Header="全选" Command="SelectAll" />
                             </ContextMenu>
                         </TextBox.ContextMenu>
                     </TextBox>
@@ -335,17 +361,20 @@
                                     BorderThickness="1"
                                     Padding="12">
                                 <StackPanel Width="320">
-                                    <TextBlock Text="高级搜索"
+                                    <TextBlock x:Name="AdvancedTitleLabel"
+                                               Text="高级搜索"
                                                Foreground="{DynamicResource TextBrush}"
                                                FontWeight="SemiBold"
                                                Margin="0,0,0,2" />
-                                    <TextBlock Text="命中条件：包含任一“包含”关键词，且不包含任何“排除”关键词。仅支持 ASCII 关键词。"
+                                    <TextBlock x:Name="AdvancedHintLabel"
+                                               Text="命中条件：包含任一“包含”关键词，且不包含任何“排除”关键词。仅支持 ASCII 关键词。"
                                                Foreground="{DynamicResource MutedTextBrush}"
                                                FontSize="11"
                                                TextWrapping="Wrap"
                                                Margin="0,0,0,8" />
 
-                                    <TextBlock Text="包含任一（OR）"
+                                    <TextBlock x:Name="IncludeLabel"
+                                               Text="包含任一（OR）"
                                                Foreground="{DynamicResource TextBrush}"
                                                Margin="0,0,0,4" />
                                     <StackPanel x:Name="AdvancedIncludePanel" />
@@ -358,7 +387,8 @@
                                     <Separator Margin="0,12,0,8"
                                                Background="{DynamicResource BorderBrush}" />
 
-                                    <TextBlock Text="排除任一（NOT）"
+                                    <TextBlock x:Name="ExcludeLabel"
+                                               Text="排除任一（NOT）"
                                                Foreground="{DynamicResource TextBrush}"
                                                Margin="0,0,0,4" />
                                     <StackPanel x:Name="AdvancedExcludePanel" />
@@ -376,11 +406,13 @@
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <Button Grid.Column="0"
+                                        <Button x:Name="AdvancedCloseButton"
+                                                Grid.Column="0"
                                                 Content="关闭"
                                                 HorizontalAlignment="Left"
                                                 Click="AdvancedSearchClose_Click" />
-                                        <Button Grid.Column="1"
+                                        <Button x:Name="AdvancedRunButton"
+                                                Grid.Column="1"
                                                 Content="搜索"
                                                 MinWidth="64"
                                                 Click="AdvancedSearchRun_Click" />
@@ -448,8 +480,8 @@
                                  PreviewMouseLeftButtonUp="SearchContentBox_PreviewMouseLeftButtonUp">
                             <TextBox.ContextMenu>
                                 <ContextMenu>
-                                    <MenuItem Header="复制" Command="Copy" />
-                                    <MenuItem Header="全选" Command="SelectAll" />
+                                    <MenuItem x:Name="SearchCopyMenuItem" Header="复制" Command="Copy" />
+                                    <MenuItem x:Name="SearchSelectAllMenuItem" Header="全选" Command="SelectAll" />
                                 </ContextMenu>
                             </TextBox.ContextMenu>
                         </TextBox>

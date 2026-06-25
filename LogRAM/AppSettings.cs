@@ -15,6 +15,8 @@ public sealed class AppSettings
 
     public bool IsDarkTheme { get; set; } = true;
 
+    public string Language { get; set; } = "zh";
+
     public List<string> FileAssociations { get; set; } = new() { ".log" };
 
     private static string SettingsFilePath
@@ -70,6 +72,8 @@ public sealed class AppSettings
         }
 
         FontSize = Math.Clamp(FontSize, 6, 72);
+
+        Language = string.Equals(Language, "en", StringComparison.OrdinalIgnoreCase) ? "en" : "zh";
 
         FileAssociations ??= new();
         FileAssociations = FileAssociations

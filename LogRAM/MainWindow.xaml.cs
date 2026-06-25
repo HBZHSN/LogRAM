@@ -23,6 +23,7 @@ namespace LogRAM;
 public sealed partial class MainWindow : Window
 {
     private const double LogLineHeight = 20;
+    private const double HorizontalScrollBarHeight = 14;
     private const int MinPageLineCount = 1;
     private const int LogWheelLinesPerDetent = 3;
     private const int DwmwaUseImmersiveDarkMode = 20;
@@ -99,11 +100,14 @@ public sealed partial class MainWindow : Window
         SourceInitialized += (_, _) => ApplyNativeTitleBarTheme();
         Closed += MainWindow_Closed;
 
+        Loc.SetLanguage(Loc.Parse(_settings.Language));
+
         _editorFontFamily = new FontFamily(_settings.FontFamily);
         _editorFontSize = _settings.FontSize;
         ApplyEditorFont();
 
         ApplyTheme(_settings.IsDarkTheme ? AppTheme.Dark : AppTheme.Light);
+        ApplyLanguage();
         ResetStatus();
         UpdateControlState();
 
@@ -118,8 +122,8 @@ public sealed partial class MainWindow : Window
         {
             CheckFileExists = true,
             Multiselect = false,
-            Filter = "Log files (*.log;*.txt)|*.log;*.txt|All files (*.*)|*.*",
-            Title = "打开日志文件"
+            Filter = Loc.S.OpenDialogFilter,
+            Title = Loc.S.OpenDialogTitle
         };
 
         if (dialog.ShowDialog(this) != true)
@@ -127,7 +131,69 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        await OpenFileAsync(dialog.FileName, encodingOverride: null, startLineNumber: 1);
+        await OpenOrLaunchAsync(dialog.FileName);
+    }
+
+    private async Task OpenOrLaunchAsync(string filePath)
+    {
+        // 已打开文件（或正忙）时，再次打开则启动新的 LogRAM 实例，避免覆盖当前文件
+        if (_document is not null || _isOpening || _isSearching)
+        {
+            LaunchNewInstance(filePath);
+            return;
+        }
+
+        await OpenFileAsync(filePath, encodingOverride: null, startLineNumber: 1);
+    }
+
+    private void LaunchNewInstance(string filePath)
+    {
+        try
+        {
+            var exePath = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(exePath))
+            {
+                return;
+            }
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = exePath,
+                UseShellExecute = false
+            };
+            startInfo.ArgumentList.Add(filePath);
+            Process.Start(startInfo);
+        }
+        catch (Exception ex)
+        {
+            _ = ShowErrorAsync(Loc.S.OpenFailedTitle, DescribeException(ex));
+        }
+    }
+
+    private void Window_PreviewDragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop)
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private async void Window_PreviewDrop(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetData(DataFormats.FileDrop) is not string[] files || files.Length == 0)
+        {
+            return;
+        }
+
+        e.Handled = true;
+
+        foreach (var file in files)
+        {
+            if (File.Exists(file))
+            {
+                await OpenOrLaunchAsync(file);
+            }
+        }
     }
 
     private async void RefreshButton_Click(object sender, RoutedEventArgs e)
@@ -237,7 +303,7 @@ public sealed partial class MainWindow : Window
             Content = "×",
             Width = 28,
             Margin = new Thickness(4, 0, 0, 0),
-            ToolTip = "删除该关键词"
+            ToolTip = Loc.S.RemoveKeywordTip
         };
         removeButton.Click += (_, _) => host.Children.Remove(row);
         Grid.SetColumn(removeButton, 1);
@@ -276,14 +342,14 @@ public sealed partial class MainWindow : Window
 
         if (includes.Count == 0 && excludes.Count == 0)
         {
-            await ShowErrorAsync("无法搜索", "请至少填写一个包含或排除关键词。");
+            await ShowErrorAsync(Loc.S.CannotSearchTitle, Loc.S.CannotSearchNoKeyword);
             return;
         }
 
         var badTerm = includes.Concat(excludes).FirstOrDefault(term => !IsAsciiKeyword(term));
         if (badTerm is not null)
         {
-            await ShowErrorAsync("无法搜索", "高级搜索关键词仅支持 ASCII 字符。");
+            await ShowErrorAsync(Loc.S.CannotSearchTitle, Loc.S.CannotSearchAscii);
             return;
         }
 
@@ -339,6 +405,103 @@ public sealed partial class MainWindow : Window
         SyncSettingsControls();
     }
 
+    private void LanguageComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        var language = LanguageComboBox.SelectedIndex == 1 ? AppLanguage.English : AppLanguage.Chinese;
+        if (language == Loc.Current)
+        {
+            return;
+        }
+
+        Loc.SetLanguage(language);
+        _settings.Language = Loc.ToCode(language);
+        SaveSettings();
+        ApplyLanguage();
+    }
+
+    private void ApplyLanguage()
+    {
+        var s = Loc.S;
+
+        OpenButton.Content = s.OpenButton;
+        OpenButton.ToolTip = s.OpenButtonTip;
+        RefreshButton.Content = s.RefreshButton;
+        RefreshButton.ToolTip = s.RefreshButtonTip;
+        EncodingComboBox.ToolTip = s.EncodingTip;
+        SettingsButton.Content = s.SettingsButton;
+        SettingsButton.ToolTip = s.SettingsButtonTip;
+
+        FontLabel.Text = s.FontLabel;
+        FontSizeLabel.Text = s.FontSizeLabel;
+        LanguageLabel.Text = s.LanguageLabel;
+        FileAssocLabel.Text = s.FileAssocLabel;
+        FileAssocHintLabel.Text = s.FileAssocHint;
+        ApplyFileAssociationButton.Content = s.ApplyAssocButton;
+        ApplyFileAssociationButton.ToolTip = s.ApplyAssocButtonTip;
+
+        CaseSensitiveButton.ToolTip = s.CaseSensitiveTip;
+        RegexButton.ToolTip = s.RegexTip;
+        AdvancedSearchButton.Content = s.AdvancedButton;
+        AdvancedSearchButton.ToolTip = s.AdvancedButtonTip;
+
+        AdvancedTitleLabel.Text = s.AdvancedTitle;
+        AdvancedHintLabel.Text = s.AdvancedHint;
+        IncludeLabel.Text = s.IncludeLabel;
+        AddIncludeButton.Content = s.AddIncludeButton;
+        ExcludeLabel.Text = s.ExcludeLabel;
+        AddExcludeButton.Content = s.AddExcludeButton;
+        AdvancedCloseButton.Content = s.CloseButton;
+        AdvancedRunButton.Content = s.SearchButton;
+
+        SearchTextBox.ToolTip = s.SearchTextBoxTip;
+        SearchButton.Content = s.SearchButton;
+        SearchButton.ToolTip = s.SearchButtonTip;
+        CancelSearchButton.Content = s.CancelButton;
+        CancelSearchButton.ToolTip = s.CancelButtonTip;
+
+        LogCopyMenuItem.Header = s.MenuCopy;
+        LogSelectAllMenuItem.Header = s.MenuSelectAll;
+        SearchCopyMenuItem.Header = s.MenuCopy;
+        SearchSelectAllMenuItem.Header = s.MenuSelectAll;
+
+        UpdateThemeToggleText();
+
+        if (_isSettingsInitialized)
+        {
+            UpdateVersionText();
+        }
+
+        RefreshStatusTexts();
+    }
+
+    private void RefreshStatusTexts()
+    {
+        SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(_searchResults.Count);
+        UpdateMemoryStatus();
+
+        if (_document is null)
+        {
+            if (!_isOpening && !_isSearching)
+            {
+                FilePathTextBlock.Text = Loc.S.NoFileOpen;
+                SearchStatusTextBlock.Text = Loc.S.Ready;
+            }
+        }
+        else
+        {
+            UpdateDocumentStatus();
+        }
+    }
+
+    private void UpdateVersionText()
+    {
+        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        var versionText = version is null
+            ? "1.0.0"
+            : $"{version.Major}.{version.Minor}.{version.Build}";
+        VersionTextBlock.Text = Loc.S.VersionText(versionText);
+    }
+
     private void EnsureSettingsInitialized()
     {
         if (_isSettingsInitialized)
@@ -367,10 +530,7 @@ public sealed partial class MainWindow : Window
 
         FontSizeComboBox.ItemsSource = sizes;
 
-        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
-        VersionTextBlock.Text = version is null
-            ? "版本 1.0.0"
-            : $"版本 {version.Major}.{version.Minor}.{version.Build}";
+        UpdateVersionText();
 
         _isSettingsInitialized = true;
     }
@@ -389,6 +549,8 @@ public sealed partial class MainWindow : Window
             .FirstOrDefault(text => text == sizeText);
 
         _isUpdatingFontSettings = false;
+
+        LanguageComboBox.SelectedIndex = Loc.Current == AppLanguage.English ? 1 : 0;
 
         AssociateLogCheckBox.IsChecked = _settings.FileAssociations.Contains(".log");
         AssociateTxtCheckBox.IsChecked = _settings.FileAssociations.Contains(".txt");
@@ -479,7 +641,7 @@ public sealed partial class MainWindow : Window
     private void UpdateSearchPageLineCount(double viewportHeight)
     {
         var lineHeight = GetSearchContentLineHeight();
-        var usableHeight = viewportHeight - SearchContentBox.Padding.Top - SearchContentBox.Padding.Bottom;
+        var usableHeight = viewportHeight - SearchContentBox.Padding.Top - SearchContentBox.Padding.Bottom - HorizontalScrollBarHeight;
         var newCount = Math.Max(MinPageLineCount, (int)(usableHeight / lineHeight));
         if (newCount == _searchPageLineCount)
         {
@@ -766,15 +928,20 @@ public sealed partial class MainWindow : Window
 
         ApplyInactiveSelectionHighlight(theme);
 
-        _isUpdatingThemeToggle = true;
-        ThemeToggleButton.IsChecked = theme == AppTheme.Light;
-        ThemeToggleButton.Content = theme == AppTheme.Dark ? "深色" : "浅色";
-        ThemeToggleButton.ToolTip = theme == AppTheme.Dark
-            ? "当前深色模式，点击切换浅色模式"
-            : "当前浅色模式，点击切换深色模式";
-        _isUpdatingThemeToggle = false;
+        UpdateThemeToggleText();
 
         ApplyNativeTitleBarTheme();
+    }
+
+    private void UpdateThemeToggleText()
+    {
+        _isUpdatingThemeToggle = true;
+        ThemeToggleButton.IsChecked = _currentTheme == AppTheme.Light;
+        ThemeToggleButton.Content = _currentTheme == AppTheme.Dark ? Loc.S.ThemeDark : Loc.S.ThemeLight;
+        ThemeToggleButton.ToolTip = _currentTheme == AppTheme.Dark
+            ? Loc.S.ThemeTipDark
+            : Loc.S.ThemeTipLight;
+        _isUpdatingThemeToggle = false;
     }
 
     private void ApplyNativeTitleBarTheme()
@@ -807,7 +974,7 @@ public sealed partial class MainWindow : Window
     {
         CancelCurrentSearch();
         _isOpening = true;
-        SearchStatusTextBlock.Text = "加载中";
+        SearchStatusTextBlock.Text = Loc.S.Loading;
         SearchProgressBar.Visibility = Visibility.Collapsed;
         UpdateControlState();
 
@@ -833,16 +1000,16 @@ public sealed partial class MainWindow : Window
 
             SelectEncoding(newDocument.EncodingKind);
             UpdateLineNumberColumnWidth();
-            SearchResultStatusTextBlock.Text = "搜索结果：0 条";
-            SearchStatusTextBlock.Text = $"加载完成：{stopwatch.Elapsed.TotalSeconds:0.00}s";
+            SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(0);
+            SearchStatusTextBlock.Text = Loc.S.LoadDone(stopwatch.Elapsed.TotalSeconds);
 
             ConfigureScrollBar();
             LoadPageByLineNumber(Math.Max(1, startLineNumber), updateScrollBar: true);
         }
         catch (Exception ex)
         {
-            SearchStatusTextBlock.Text = "打开失败";
-            await ShowErrorAsync("打开失败", DescribeException(ex));
+            SearchStatusTextBlock.Text = Loc.S.OpenFailedTitle;
+            await ShowErrorAsync(Loc.S.OpenFailedTitle, DescribeException(ex));
             UpdateDocumentStatus();
         }
         finally
@@ -880,7 +1047,7 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            _ = ShowErrorAsync("读取失败", DescribeException(ex));
+            _ = ShowErrorAsync(Loc.S.ReadFailedTitle, DescribeException(ex));
         }
     }
 
@@ -895,7 +1062,7 @@ public sealed partial class MainWindow : Window
         var pattern = SearchTextBox.Text;
         if (string.IsNullOrWhiteSpace(pattern))
         {
-            await ShowErrorAsync("无法搜索", "请输入搜索条件。");
+            await ShowErrorAsync(Loc.S.CannotSearchTitle, Loc.S.CannotSearchEmpty);
             return;
         }
 
@@ -907,7 +1074,7 @@ public sealed partial class MainWindow : Window
                 .FirstOrDefault(term => !IsAsciiKeyword(term));
             if (badTerm is not null)
             {
-                await ShowErrorAsync("无法搜索", "高级搜索关键词仅支持 ASCII 字符。");
+                await ShowErrorAsync(Loc.S.CannotSearchTitle, Loc.S.CannotSearchAscii);
                 return;
             }
 
@@ -921,8 +1088,8 @@ public sealed partial class MainWindow : Window
         ClearSearchTextBoxes();
         SearchProgressBar.Value = 0;
         SearchProgressBar.Visibility = Visibility.Visible;
-        SearchResultStatusTextBlock.Text = "搜索结果：0 条";
-        SearchStatusTextBlock.Text = "搜索中";
+        SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(0);
+        SearchStatusTextBlock.Text = Loc.S.Searching;
         UpdateControlState();
 
         var progress = new Progress<LogSearchProgress>(UpdateSearchProgress);
@@ -950,23 +1117,23 @@ public sealed partial class MainWindow : Window
 
             stopwatch.Stop();
             SearchProgressBar.Value = 100;
-            SearchStatusTextBlock.Text = $"完成：{summary.MatchCount} 条  {stopwatch.Elapsed.TotalSeconds:0.00}s";
-            SearchResultStatusTextBlock.Text = $"搜索结果：{summary.MatchCount} 条";
+            SearchStatusTextBlock.Text = Loc.S.SearchDone(summary.MatchCount, stopwatch.Elapsed.TotalSeconds);
+            SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(summary.MatchCount);
         }
         catch (OperationCanceledException)
         {
-            SearchStatusTextBlock.Text = $"已取消：{_searchResults.Count} 条";
-            SearchResultStatusTextBlock.Text = $"搜索结果：{_searchResults.Count} 条";
+            SearchStatusTextBlock.Text = Loc.S.SearchCancelled(_searchResults.Count);
+            SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(_searchResults.Count);
         }
         catch (ArgumentException ex)
         {
-            SearchStatusTextBlock.Text = "搜索失败";
-            await ShowErrorAsync("搜索失败", DescribeException(ex));
+            SearchStatusTextBlock.Text = Loc.S.SearchFailedTitle;
+            await ShowErrorAsync(Loc.S.SearchFailedTitle, DescribeException(ex));
         }
         catch (Exception ex)
         {
-            SearchStatusTextBlock.Text = "搜索失败";
-            await ShowErrorAsync("搜索失败", DescribeException(ex));
+            SearchStatusTextBlock.Text = Loc.S.SearchFailedTitle;
+            await ShowErrorAsync(Loc.S.SearchFailedTitle, DescribeException(ex));
         }
         finally
         {
@@ -991,7 +1158,7 @@ public sealed partial class MainWindow : Window
             RefreshSearchTextBoxes();
             UpdateSearchScrollAvailability();
             UpdateSearchScrollThumb();
-            SearchResultStatusTextBlock.Text = $"搜索结果：{_searchResults.Count} 条";
+            SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(_searchResults.Count);
         }, DispatcherPriority.Background);
     }
 
@@ -1103,7 +1270,7 @@ public sealed partial class MainWindow : Window
             : Math.Clamp(progress.BytesRead * 100.0 / progress.TotalBytes, 0, 100);
 
         SearchProgressBar.Value = percent;
-        SearchStatusTextBlock.Text = $"搜索中：{progress.MatchCount} 条";
+        SearchStatusTextBlock.Text = Loc.S.SearchingCount(progress.MatchCount);
     }
 
     private void CancelCurrentSearch()
@@ -1145,17 +1312,18 @@ public sealed partial class MainWindow : Window
     {
         var available = LogFileDocument.GetAvailablePhysicalMemory();
         MemoryStatusTextBlock.Text = _document is null
-            ? $"剩余内存：{FormatBytes(available)} · 可打开上限：{FormatBytes(LogFileDocument.MaxFileSize)}"
-            : $"剩余内存：{FormatBytes(available)} · 当前占用：{FormatBytes(_document.MemoryUsage)}";
+            ? Loc.S.MemoryIdle(FormatBytes(available), FormatBytes(LogFileDocument.MaxFileSize))
+            : Loc.S.MemoryActive(FormatBytes(available), FormatBytes(_document.MemoryUsage));
     }
 
     private void ResetStatus()
     {
-        FilePathTextBlock.Text = "未打开文件";
+        Title = "LogRAM";
+        FilePathTextBlock.Text = Loc.S.NoFileOpen;
         FileSizeTextBlock.Text = string.Empty;
         EncodingStatusTextBlock.Text = string.Empty;
-        SearchStatusTextBlock.Text = "就绪";
-        SearchResultStatusTextBlock.Text = "搜索结果：0 条";
+        SearchStatusTextBlock.Text = Loc.S.Ready;
+        SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(0);
         SearchProgressBar.Visibility = Visibility.Collapsed;
         ConfigureScrollBar();
     }
@@ -1170,7 +1338,8 @@ public sealed partial class MainWindow : Window
         }
 
         FilePathTextBlock.Text = _document.FilePath;
-        FileSizeTextBlock.Text = $"{FormatBytes(_document.FileSize)}  {_document.LineCount:n0} 行  当前 {_currentLineNumber:n0}";
+        Title = Path.GetFileName(_document.FilePath);
+        FileSizeTextBlock.Text = Loc.S.DocStatus(FormatBytes(_document.FileSize), _document.LineCount, _currentLineNumber);
         EncodingStatusTextBlock.Text = FormatEncoding(_document.EncodingKind);
         UpdateMemoryStatus();
     }
@@ -1512,17 +1681,17 @@ public sealed partial class MainWindow : Window
                 SetFileAssociation(ext, progId, exePath, shouldAssociate);
             }
 
-            var boundList = string.Join("、", _settings.FileAssociations.DefaultIfEmpty("无"));
+            var boundList = string.Join(Loc.S.AssocSeparator, _settings.FileAssociations.DefaultIfEmpty(Loc.S.AssocNone));
             MessageBox.Show(
                 this,
-                $"文件类型绑定已更新。\n\n当前默认绑定：{boundList}\n双击这些类型的文件将自动使用 LogRAM 打开。",
-                "绑定完成",
+                Loc.S.AssocUpdated(boundList),
+                Loc.S.AssocDoneTitle,
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
-            _ = ShowErrorAsync("绑定失败", DescribeException(ex));
+            _ = ShowErrorAsync(Loc.S.AssocFailedTitle, DescribeException(ex));
         }
     }
 
@@ -1537,7 +1706,7 @@ public sealed partial class MainWindow : Window
         if (enable)
         {
             using var progKey = classesKey.CreateSubKey(progId);
-            progKey.SetValue("FriendlyTypeName", $"LogRAM {extension} 日志文件", RegistryValueKind.String);
+            progKey.SetValue("FriendlyTypeName", Loc.S.FriendlyTypeName(extension), RegistryValueKind.String);
             using var iconKey = progKey.CreateSubKey("DefaultIcon");
             iconKey.SetValue(null, $"\"{exePath}\",0", RegistryValueKind.String);
             using var shellKey = progKey.CreateSubKey(@"shell\open\command");
@@ -1639,11 +1808,11 @@ public sealed partial class MainWindow : Window
     {
         return ex switch
         {
-            FileNotFoundException => "文件不存在。",
-            UnauthorizedAccessException => "没有权限访问该文件。",
-            InvalidOperationException when ex.Message.Contains("available memory limit", StringComparison.OrdinalIgnoreCase) => $"日志文件超过了可用内存上限（启动时剩余内存的 80%，约 {FormatBytes(LogFileDocument.MaxFileSize)}）。",
-            OutOfMemoryException => "内存不足，无法构造日志索引。",
-            ArgumentException when ex.Message.Contains("pattern", StringComparison.OrdinalIgnoreCase) => "搜索条件不能为空。",
+            FileNotFoundException => Loc.S.DescribeFileNotFound,
+            UnauthorizedAccessException => Loc.S.DescribeUnauthorized,
+            InvalidOperationException when ex.Message.Contains("available memory limit", StringComparison.OrdinalIgnoreCase) => Loc.S.DescribeMemoryLimit(FormatBytes(LogFileDocument.MaxFileSize)),
+            OutOfMemoryException => Loc.S.DescribeOutOfMemory,
+            ArgumentException when ex.Message.Contains("pattern", StringComparison.OrdinalIgnoreCase) => Loc.S.DescribeEmptyPattern,
             _ => ex.Message
         };
     }

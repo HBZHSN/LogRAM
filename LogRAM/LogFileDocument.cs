@@ -16,7 +16,6 @@ public sealed class LogFileDocument : IDisposable
 
     private const double AvailableMemoryUsageRatio = 0.8;
 
-    private const int SampleSize = 64 * 1024;
     private const int ChunkBits = 26;
     private const int ChunkSize = 1 << ChunkBits;
     private const int ChunkMask = ChunkSize - 1;
@@ -25,7 +24,6 @@ public sealed class LogFileDocument : IDisposable
     private const long ProgressBytes = 64L * 1024L * 1024L;
     private const long ParallelPlainSearchThreshold = 256L * 1024L * 1024L;
 
-    private static readonly Encoding StrictUtf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
     private static readonly Vector<byte> VectorLowercaseA = new((byte)'a');
     private static readonly Vector<byte> VectorLowercaseZ = new((byte)'z');
     private static readonly Vector<byte> VectorAsciiCaseBit = new(0x20);
@@ -75,7 +73,7 @@ public sealed class LogFileDocument : IDisposable
             throw new InvalidOperationException("The log file exceeds the available memory limit.");
         }
 
-        var encodingKind = encodingOverride ?? DetectEncoding(filePath, fileInfo.Length);
+        var encodingKind = encodingOverride ?? LogTextEncoding.Utf8;
         var encoding = GetEncoding(encodingKind);
         var chunks = LoadFileIntoMemory(filePath, fileInfo.Length, out var lineStarts);
 
@@ -1139,48 +1137,6 @@ public sealed class LogFileDocument : IDisposable
             }
 
             totalRead += read;
-        }
-    }
-
-    private static LogTextEncoding DetectEncoding(string filePath, long fileSize)
-    {
-        if (fileSize == 0)
-        {
-            return LogTextEncoding.Utf8;
-        }
-
-        var length = (int)Math.Min(fileSize, SampleSize);
-        var sample = new byte[length];
-
-        using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-        {
-            var read = stream.Read(sample, 0, sample.Length);
-            if (read != sample.Length)
-            {
-                Array.Resize(ref sample, read);
-            }
-        }
-
-        if (sample.Length >= 3 && sample[0] == 0xEF && sample[1] == 0xBB && sample[2] == 0xBF)
-        {
-            return LogTextEncoding.Utf8;
-        }
-
-        return LooksLikeUtf8(sample) ? LogTextEncoding.Utf8 : LogTextEncoding.Gbk;
-    }
-
-    private static bool LooksLikeUtf8(byte[] sample)
-    {
-        try
-        {
-            var decoder = StrictUtf8.GetDecoder();
-            var chars = new char[StrictUtf8.GetMaxCharCount(sample.Length)];
-            decoder.Convert(sample, 0, sample.Length, chars, 0, chars.Length, flush: false, out _, out _, out _);
-            return true;
-        }
-        catch (DecoderFallbackException)
-        {
-            return false;
         }
     }
 
