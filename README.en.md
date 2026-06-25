@@ -12,6 +12,13 @@
 
 LogRAM = **Log** + **RAM**. It loads the entire log file into memory, then combines a byte-level / SIMD / multi-core search engine with virtualized rendering so you can **open instantly, scroll smoothly, and search in a flash** through multi-GB — even tens-of-GB — logs that Notepad and ordinary editors simply cannot open.
 
+<div align="center">
+
+<img src="light.png" alt="Light theme" width="49%" />
+<img src="dark.png" alt="Dark theme" width="49%" />
+
+</div>
+
 ---
 
 ## Features

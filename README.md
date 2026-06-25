@@ -12,6 +12,13 @@
 
 LogRAM = **Log** + **RAM**。它把整个日志文件一次性载入内存，再配合字节级 / SIMD / 多核搜索引擎和虚拟化渲染，让你能够**秒开、流畅滚动、瞬时搜索**那些记事本和普通编辑器根本打不开的几 GB 乃至几十 GB 的日志文件。
 
+<div align="center">
+
+<img src="light.png" alt="浅色主题" width="49%" />
+<img src="dark.png" alt="深色主题" width="49%" />
+
+</div>
+
 ---
 
 ## 功能特性
