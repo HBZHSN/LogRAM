@@ -169,6 +169,147 @@ public sealed partial class MainWindow : Window
         _searchCts?.Cancel();
     }
 
+    private void AdvancedSearchButton_Click(object sender, RoutedEventArgs e)
+    {
+        AdvancedSearchPopup.IsOpen = true;
+    }
+
+    private void AdvancedSearchPopup_Opened(object? sender, EventArgs e)
+    {
+        if (AdvancedSearchQuery.TryParse(SearchTextBox.Text, out var query))
+        {
+            PopulateAdvancedPanels(query.Includes, query.Excludes);
+        }
+        else if (AdvancedIncludePanel.Children.Count == 0 && AdvancedExcludePanel.Children.Count == 0)
+        {
+            AddKeywordRow(AdvancedIncludePanel, string.Empty);
+            AddKeywordRow(AdvancedExcludePanel, string.Empty);
+        }
+    }
+
+    private void PopulateAdvancedPanels(IReadOnlyList<string> includes, IReadOnlyList<string> excludes)
+    {
+        AdvancedIncludePanel.Children.Clear();
+        AdvancedExcludePanel.Children.Clear();
+
+        foreach (var term in includes)
+        {
+            AddKeywordRow(AdvancedIncludePanel, term);
+        }
+
+        foreach (var term in excludes)
+        {
+            AddKeywordRow(AdvancedExcludePanel, term);
+        }
+
+        if (AdvancedIncludePanel.Children.Count == 0)
+        {
+            AddKeywordRow(AdvancedIncludePanel, string.Empty);
+        }
+
+        if (AdvancedExcludePanel.Children.Count == 0)
+        {
+            AddKeywordRow(AdvancedExcludePanel, string.Empty);
+        }
+    }
+
+    private void AddIncludeKeyword_Click(object sender, RoutedEventArgs e)
+    {
+        AddKeywordRow(AdvancedIncludePanel, string.Empty);
+    }
+
+    private void AddExcludeKeyword_Click(object sender, RoutedEventArgs e)
+    {
+        AddKeywordRow(AdvancedExcludePanel, string.Empty);
+    }
+
+    private void AddKeywordRow(Panel host, string text)
+    {
+        var row = new Grid { Margin = new Thickness(0, 2, 0, 0) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var textBox = new TextBox { Text = text };
+        Grid.SetColumn(textBox, 0);
+
+        var removeButton = new Button
+        {
+            Content = "×",
+            Width = 28,
+            Margin = new Thickness(4, 0, 0, 0),
+            ToolTip = "删除该关键词"
+        };
+        removeButton.Click += (_, _) => host.Children.Remove(row);
+        Grid.SetColumn(removeButton, 1);
+
+        row.Children.Add(textBox);
+        row.Children.Add(removeButton);
+        host.Children.Add(row);
+        textBox.Focus();
+    }
+
+    private static List<string> CollectKeywords(Panel host)
+    {
+        var keywords = new List<string>();
+        foreach (var child in host.Children)
+        {
+            if (child is not Grid row)
+            {
+                continue;
+            }
+
+            var textBox = row.Children.OfType<TextBox>().FirstOrDefault();
+            var term = textBox?.Text.Trim();
+            if (!string.IsNullOrEmpty(term))
+            {
+                keywords.Add(term);
+            }
+        }
+
+        return keywords;
+    }
+
+    private async void AdvancedSearchRun_Click(object sender, RoutedEventArgs e)
+    {
+        var includes = CollectKeywords(AdvancedIncludePanel);
+        var excludes = CollectKeywords(AdvancedExcludePanel);
+
+        if (includes.Count == 0 && excludes.Count == 0)
+        {
+            await ShowErrorAsync("无法搜索", "请至少填写一个包含或排除关键词。");
+            return;
+        }
+
+        var badTerm = includes.Concat(excludes).FirstOrDefault(term => !IsAsciiKeyword(term));
+        if (badTerm is not null)
+        {
+            await ShowErrorAsync("无法搜索", "高级搜索关键词仅支持 ASCII 字符。");
+            return;
+        }
+
+        SearchTextBox.Text = AdvancedSearchQuery.Format(includes, excludes);
+        AdvancedSearchPopup.IsOpen = false;
+        await StartSearchAsync();
+    }
+
+    private void AdvancedSearchClose_Click(object sender, RoutedEventArgs e)
+    {
+        AdvancedSearchPopup.IsOpen = false;
+    }
+
+    private static bool IsAsciiKeyword(string term)
+    {
+        foreach (var ch in term)
+        {
+            if (ch > '\x7F')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private void ThemeToggleButton_Checked(object sender, RoutedEventArgs e)
     {
         if (!_isUpdatingThemeToggle)
@@ -758,6 +899,21 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        AdvancedSearchQuery? advancedQuery = null;
+        if (AdvancedSearchQuery.TryParse(pattern, out var parsedAdvanced))
+        {
+            var badTerm = parsedAdvanced.Includes
+                .Concat(parsedAdvanced.Excludes)
+                .FirstOrDefault(term => !IsAsciiKeyword(term));
+            if (badTerm is not null)
+            {
+                await ShowErrorAsync("无法搜索", "高级搜索关键词仅支持 ASCII 字符。");
+                return;
+            }
+
+            advancedQuery = parsedAdvanced;
+        }
+
         var searchCts = new CancellationTokenSource();
         _searchCts = searchCts;
         _isSearching = true;
@@ -774,13 +930,23 @@ public sealed partial class MainWindow : Window
 
         try
         {
-            var summary = await document.SearchAsync(
-                pattern,
-                RegexButton.IsChecked == true,
-                CaseSensitiveButton.IsChecked == true,
-                AddSearchResultBatch,
-                progress,
-                searchCts.Token);
+            var searchTask = advancedQuery is not null
+                ? document.AdvancedSearchAsync(
+                    advancedQuery.Includes,
+                    advancedQuery.Excludes,
+                    CaseSensitiveButton.IsChecked == true,
+                    AddSearchResultBatch,
+                    progress,
+                    searchCts.Token)
+                : document.SearchAsync(
+                    pattern,
+                    RegexButton.IsChecked == true,
+                    CaseSensitiveButton.IsChecked == true,
+                    AddSearchResultBatch,
+                    progress,
+                    searchCts.Token);
+
+            var summary = await searchTask;
 
             stopwatch.Stop();
             SearchProgressBar.Value = 100;
@@ -978,7 +1144,9 @@ public sealed partial class MainWindow : Window
     private void UpdateMemoryStatus()
     {
         var available = LogFileDocument.GetAvailablePhysicalMemory();
-        MemoryStatusTextBlock.Text = $"剩余内存：{FormatBytes(available)} · 可打开上限：{FormatBytes(LogFileDocument.MaxFileSize)}";
+        MemoryStatusTextBlock.Text = _document is null
+            ? $"剩余内存：{FormatBytes(available)} · 可打开上限：{FormatBytes(LogFileDocument.MaxFileSize)}"
+            : $"剩余内存：{FormatBytes(available)} · 当前占用：{FormatBytes(_document.MemoryUsage)}";
     }
 
     private void ResetStatus()
@@ -997,12 +1165,14 @@ public sealed partial class MainWindow : Window
         if (_document is null)
         {
             ResetStatus();
+            UpdateMemoryStatus();
             return;
         }
 
         FilePathTextBlock.Text = _document.FilePath;
         FileSizeTextBlock.Text = $"{FormatBytes(_document.FileSize)}  {_document.LineCount:n0} 行  当前 {_currentLineNumber:n0}";
         EncodingStatusTextBlock.Text = FormatEncoding(_document.EncodingKind);
+        UpdateMemoryStatus();
     }
 
     private void UpdateControlState()
@@ -1014,6 +1184,7 @@ public sealed partial class MainWindow : Window
         RefreshButton.IsEnabled = hasDocument && canChangeDocument;
         EncodingComboBox.IsEnabled = hasDocument && canChangeDocument;
         SearchButton.IsEnabled = hasDocument && !_isSearching && !_isOpening;
+        AdvancedSearchButton.IsEnabled = hasDocument && !_isSearching && !_isOpening;
         CancelSearchButton.IsEnabled = _isSearching;
         UpdateLogScrollAvailability();
         UpdateLogScrollThumb();

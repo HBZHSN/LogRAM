@@ -27,6 +27,7 @@ LogRAM = **Log** + **RAM**. It loads the entire log file into memory, then combi
 - **Blazing search**: plain text uses byte-level search (no per-line decoding); ASCII case-insensitive search is SIMD-vectorized; large files are searched across all CPU cores automatically.
 - **Streaming results**: matches appear as they are found, the search can be cancelled at any time, and progress plus hit count are shown live.
 - **Regex / case sensitivity**: toggle regular expressions and case-sensitive matching.
+- **Advanced search**: combine several keywords as "include any / exclude any" — a line matches when it contains any include term (OR) and none of the exclude terms (NOT); edit them visually in a popup or type the `in(a,b);notin(c,d)` syntax directly.
 - **Click to jump**: click any line in the results and the main view instantly scrolls to and highlights that log line.
 - **CJK-friendly**: automatic UTF-8 / GBK detection, with a manual override.
 - **Virtualized rendering**: only visible lines are rendered, so scrolling and jumping stay smooth even with a tens-of-GB file in memory.
@@ -70,6 +71,7 @@ LogRAM = **Log** + **RAM**. It loads the entire log file into memory, then combi
   - Plain text: `Span.IndexOf` directly over bytes (hardware-accelerated), no decoding.
   - ASCII case-insensitive: SIMD case normalization plus a high-selectivity "anchor" byte to cut down false matches.
   - Regex / non-ASCII case-insensitive: decode each line, then match.
+  - Advanced search: each "include / exclude" keyword is compiled into a byte anchor pattern; sub-blocks are scanned to flag every line's hits, then lines that match any include term and none of the exclude terms are kept; SIMD and multi-core parallelism apply too, and keywords are ASCII-only.
   - Files ≥ 256 MB are scanned per chunk in parallel, then merged and de-duplicated in order.
 - **Virtualized rendering**: the UI holds only the currently visible lines, reading and decoding on demand while scrolling.
 
@@ -95,8 +97,9 @@ Double-click the exe to run — no installation needed.
 1. Click **打开 (Open)** and pick a `.log` / `.txt` or any text log file.
 2. The top **编码 (Encoding)** dropdown switches between UTF-8 / GBK; **刷新 (Refresh)** re-reads the current file.
 3. Type a keyword in the search bar and press **Enter** or click **搜索 (Search)**; optionally enable **正则 (Regex)** and **大小写 (Case)**, and **取消 (Cancel)** mid-search.
-4. Click any line in the results to jump to and highlight the matching log line in the main view.
-5. Use the top-right button to toggle the **dark / light** theme.
+4. Click **高级 (Advanced)** to open the advanced search panel, fill in several "include any (OR)" and "exclude any (NOT)" keywords (ASCII only), then click **搜索 (Search)**; the `in(a,b);notin(c,d)` syntax can also be typed straight into the search bar.
+5. Click any line in the results to jump to and highlight the matching log line in the main view.
+6. Use the top-right button to toggle the **dark / light** theme.
 
 ## Build from Source
 
