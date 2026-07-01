@@ -28,7 +28,7 @@ public sealed class LogFileDocument : IDisposable
     private static readonly Vector<byte> VectorLowercaseZ = new((byte)'z');
     private static readonly Vector<byte> VectorAsciiCaseBit = new(0x20);
 
-    private readonly byte[][] _chunks;
+    private readonly List<byte[]> _chunks;
     private readonly List<long> _lineStarts;
     private readonly Encoding _encoding;
 
@@ -37,7 +37,7 @@ public sealed class LogFileDocument : IDisposable
         long fileSize,
         LogTextEncoding encodingKind,
         Encoding encoding,
-        byte[][] chunks,
+        List<byte[]> chunks,
         List<long> lineStarts)
     {
         FilePath = filePath;
@@ -50,13 +50,23 @@ public sealed class LogFileDocument : IDisposable
 
     public string FilePath { get; }
 
-    public long FileSize { get; }
+    public long FileSize { get; private set; }
 
     public LogTextEncoding EncodingKind { get; }
 
     public long LineCount => _lineStarts.Count;
 
     public long MemoryUsage => FileSize + (long)_lineStarts.Count * sizeof(long);
+
+    public readonly record struct AppendResult(
+        long OldFileSize,
+        long NewFileSize,
+        long OldLineCount,
+        long NewLineCount,
+        bool IsTruncated)
+    {
+        public bool HasNewContent => NewFileSize > OldFileSize;
+    }
 
     public static LogFileDocument Open(string filePath, LogTextEncoding? encodingOverride)
     {
@@ -187,6 +197,37 @@ public sealed class LogFileDocument : IDisposable
         return GetLineIndexForOffset(offset) + 1L;
     }
 
+    public AppendResult AppendNewContent()
+    {
+        if (!File.Exists(FilePath))
+        {
+            throw new FileNotFoundException("File does not exist.", FilePath);
+        }
+
+        var fileInfo = new FileInfo(FilePath);
+        var oldFileSize = FileSize;
+        var oldLineCount = LineCount;
+        var newFileSize = fileInfo.Length;
+
+        if (newFileSize < oldFileSize)
+        {
+            return new AppendResult(oldFileSize, newFileSize, oldLineCount, oldLineCount, IsTruncated: true);
+        }
+
+        if (newFileSize == oldFileSize)
+        {
+            return new AppendResult(oldFileSize, newFileSize, oldLineCount, oldLineCount, IsTruncated: false);
+        }
+
+        if (newFileSize > MaxFileSize)
+        {
+            throw new InvalidOperationException("The log file exceeds the available memory limit.");
+        }
+
+        AppendFileRange(oldFileSize, newFileSize);
+        return new AppendResult(oldFileSize, newFileSize, oldLineCount, LineCount, IsTruncated: false);
+    }
+
     private int GetLineIndexForOffset(long offset)
     {
         if (_lineStarts.Count == 0)
@@ -202,6 +243,96 @@ public sealed class LogFileDocument : IDisposable
         }
 
         return Math.Max(0, ~index - 1);
+    }
+
+    private void AppendFileRange(long oldFileSize, long newFileSize)
+    {
+        if (oldFileSize == 0)
+        {
+            _lineStarts.Add(0);
+        }
+        else if (GetByte(oldFileSize - 1) == (byte)'\n' &&
+                 (_lineStarts.Count == 0 || _lineStarts[^1] != oldFileSize))
+        {
+            _lineStarts.Add(oldFileSize);
+        }
+
+        using var stream = new FileStream(
+            FilePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 1024 * 1024,
+            FileOptions.SequentialScan);
+        stream.Seek(oldFileSize, SeekOrigin.Begin);
+
+        var position = oldFileSize;
+        while (position < newFileSize)
+        {
+            var chunkIndex = (int)(position >> ChunkBits);
+            var chunkOffset = (int)(position & ChunkMask);
+            var readLength = (int)Math.Min(ChunkSize - chunkOffset, newFileSize - position);
+
+            EnsureChunkCapacity(chunkIndex, chunkOffset + readLength);
+            var chunk = _chunks[chunkIndex];
+            ReadExactly(stream, chunk, chunkOffset, readLength);
+            IndexNewLines(chunk, chunkOffset, readLength, position, newFileSize);
+
+            position += readLength;
+        }
+
+        FileSize = newFileSize;
+    }
+
+    private void EnsureChunkCapacity(int chunkIndex, int requiredCapacity)
+    {
+        while (_chunks.Count <= chunkIndex)
+        {
+            _chunks.Add(Array.Empty<byte>());
+        }
+
+        var chunk = _chunks[chunkIndex];
+        if (chunk.Length >= requiredCapacity)
+        {
+            return;
+        }
+
+        var newCapacity = GrowChunkCapacity(chunk.Length, requiredCapacity);
+        Array.Resize(ref chunk, newCapacity);
+        _chunks[chunkIndex] = chunk;
+    }
+
+    private static int GrowChunkCapacity(int currentCapacity, int requiredCapacity)
+    {
+        var capacity = currentCapacity <= 0 ? Math.Min(ChunkSize, Math.Max(requiredCapacity, 1024 * 1024)) : currentCapacity;
+        while (capacity < requiredCapacity)
+        {
+            capacity = Math.Min(ChunkSize, capacity * 2);
+        }
+
+        return capacity;
+    }
+
+    private void IndexNewLines(byte[] chunk, int chunkOffset, int count, long absoluteOffset, long newFileSize)
+    {
+        var searchStart = chunkOffset;
+        var searchEnd = chunkOffset + count;
+        while (searchStart < searchEnd)
+        {
+            var index = Array.IndexOf(chunk, (byte)'\n', searchStart, searchEnd - searchStart);
+            if (index < 0)
+            {
+                break;
+            }
+
+            var nextOffset = absoluteOffset + index - chunkOffset + 1;
+            if (nextOffset < newFileSize)
+            {
+                _lineStarts.Add(nextOffset);
+            }
+
+            searchStart = index + 1;
+        }
     }
 
     public Task<LogSearchSummary> SearchAsync(
@@ -291,6 +422,52 @@ public sealed class LogFileDocument : IDisposable
         }, cancellationToken);
     }
 
+    public Task<LogSearchSummary> SearchLinesAsync(
+        long firstLineNumber,
+        string pattern,
+        bool useRegex,
+        bool caseSensitive,
+        Action<IReadOnlyList<LogSearchResult>> onBatch,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(pattern))
+        {
+            throw new ArgumentException("Search pattern cannot be empty.", nameof(pattern));
+        }
+
+        Regex? regex = null;
+        byte[]? patternBytes = null;
+        var plainIgnoreCaseNeedsDecode = false;
+
+        if (useRegex)
+        {
+            var options = RegexOptions.CultureInvariant;
+            if (!caseSensitive)
+            {
+                options |= RegexOptions.IgnoreCase;
+            }
+
+            regex = new Regex(pattern, options);
+        }
+        else
+        {
+            patternBytes = _encoding.GetBytes(pattern);
+            plainIgnoreCaseNeedsDecode = !caseSensitive && ContainsNonAscii(patternBytes);
+        }
+
+        return Task.Run(
+            () => SearchLineRange(
+                firstLineNumber,
+                pattern,
+                regex,
+                patternBytes,
+                caseSensitive,
+                plainIgnoreCaseNeedsDecode,
+                onBatch,
+                cancellationToken),
+            cancellationToken);
+    }
+
     public Task<LogSearchSummary> AdvancedSearchAsync(
         IReadOnlyList<string> includeTerms,
         IReadOnlyList<string> excludeTerms,
@@ -319,6 +496,27 @@ public sealed class LogFileDocument : IDisposable
         }, cancellationToken);
     }
 
+    public Task<LogSearchSummary> AdvancedSearchLinesAsync(
+        long firstLineNumber,
+        IReadOnlyList<string> includeTerms,
+        IReadOnlyList<string> excludeTerms,
+        bool caseSensitive,
+        Action<IReadOnlyList<LogSearchResult>> onBatch,
+        CancellationToken cancellationToken)
+    {
+        var includes = BuildAdvancedPatterns(includeTerms, caseSensitive);
+        var excludes = BuildAdvancedPatterns(excludeTerms, caseSensitive);
+
+        if (includes.Length == 0 && excludes.Length == 0)
+        {
+            throw new ArgumentException("Advanced search requires at least one keyword.", nameof(includeTerms));
+        }
+
+        return Task.Run(
+            () => SearchAdvancedLineRange(firstLineNumber, includes, excludes, caseSensitive, onBatch, cancellationToken),
+            cancellationToken);
+    }
+
     private LogSearchSummary RunAdvancedSearch(
         AdvancedPattern[] includes,
         AdvancedPattern[] excludes,
@@ -335,14 +533,15 @@ public sealed class LogFileDocument : IDisposable
         var parallelOptions = new ParallelOptions
         {
             CancellationToken = cancellationToken,
-            MaxDegreeOfParallelism = Math.Max(1, Math.Min(Environment.ProcessorCount, _chunks.Length))
+            MaxDegreeOfParallelism = Math.Max(1, Math.Min(Environment.ProcessorCount, _chunks.Count))
         };
 
-        Parallel.For(0, _chunks.Length, parallelOptions, chunkIndex =>
+        Parallel.For(0, _chunks.Count, parallelOptions, chunkIndex =>
         {
-            ScanChunkAdvanced(chunkIndex, includes, excludes, caseSensitive, includeHit, excludeHit, cancellationToken);
+            var chunkLength = GetChunkDataLength(chunkIndex);
+            ScanChunkAdvanced(chunkIndex, chunkLength, includes, excludes, caseSensitive, includeHit, excludeHit, cancellationToken);
 
-            var done = Interlocked.Add(ref scannedBytes, _chunks[chunkIndex].Length);
+            var done = Interlocked.Add(ref scannedBytes, chunkLength);
             progress?.Report(new LogSearchProgress(done, FileSize, 0));
         });
 
@@ -388,8 +587,149 @@ public sealed class LogFileDocument : IDisposable
         return new LogSearchSummary(matchCount);
     }
 
+    private LogSearchSummary SearchLineRange(
+        long firstLineNumber,
+        string pattern,
+        Regex? regex,
+        byte[]? patternBytes,
+        bool caseSensitive,
+        bool plainIgnoreCaseNeedsDecode,
+        Action<IReadOnlyList<LogSearchResult>> onBatch,
+        CancellationToken cancellationToken)
+    {
+        if (FileSize == 0 || _lineStarts.Count == 0)
+        {
+            return new LogSearchSummary(0);
+        }
+
+        var firstIndex = (int)Math.Clamp(firstLineNumber - 1, 0, _lineStarts.Count);
+        if (firstIndex >= _lineStarts.Count)
+        {
+            return new LogSearchSummary(0);
+        }
+
+        var batch = new List<LogSearchResult>(SearchBatchSize);
+        var matchCount = 0L;
+
+        for (var lineIndex = firstIndex; lineIndex < _lineStarts.Count; lineIndex++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var start = _lineStarts[lineIndex];
+            var next = GetLineEndOffset(lineIndex);
+            if (!IsSearchMatch(start, next, pattern, regex, patternBytes, caseSensitive, plainIgnoreCaseNeedsDecode))
+            {
+                continue;
+            }
+
+            matchCount++;
+            batch.Add(new LogSearchResult(lineIndex + 1L, start, this));
+            if (batch.Count >= SearchBatchSize)
+            {
+                onBatch(batch.ToArray());
+                batch.Clear();
+            }
+        }
+
+        if (batch.Count > 0)
+        {
+            onBatch(batch.ToArray());
+        }
+
+        return new LogSearchSummary(matchCount);
+    }
+
+    private LogSearchSummary SearchAdvancedLineRange(
+        long firstLineNumber,
+        AdvancedPattern[] includes,
+        AdvancedPattern[] excludes,
+        bool caseSensitive,
+        Action<IReadOnlyList<LogSearchResult>> onBatch,
+        CancellationToken cancellationToken)
+    {
+        if (FileSize == 0 || _lineStarts.Count == 0)
+        {
+            return new LogSearchSummary(0);
+        }
+
+        var firstIndex = (int)Math.Clamp(firstLineNumber - 1, 0, _lineStarts.Count);
+        if (firstIndex >= _lineStarts.Count)
+        {
+            return new LogSearchSummary(0);
+        }
+
+        var batch = new List<LogSearchResult>(SearchBatchSize);
+        var matchCount = 0L;
+
+        for (var lineIndex = firstIndex; lineIndex < _lineStarts.Count; lineIndex++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var start = _lineStarts[lineIndex];
+            var next = GetLineEndOffset(lineIndex);
+            if (!IsAdvancedSearchMatch(start, next, includes, excludes, caseSensitive))
+            {
+                continue;
+            }
+
+            matchCount++;
+            batch.Add(new LogSearchResult(lineIndex + 1L, start, this));
+            if (batch.Count >= SearchBatchSize)
+            {
+                onBatch(batch.ToArray());
+                batch.Clear();
+            }
+        }
+
+        if (batch.Count > 0)
+        {
+            onBatch(batch.ToArray());
+        }
+
+        return new LogSearchSummary(matchCount);
+    }
+
+    private bool IsAdvancedSearchMatch(
+        long start,
+        long next,
+        AdvancedPattern[] includes,
+        AdvancedPattern[] excludes,
+        bool caseSensitive)
+    {
+        var hasInclude = includes.Length == 0;
+        foreach (var include in includes)
+        {
+            if (ContainsPattern(start, next, include.Bytes, caseSensitive))
+            {
+                hasInclude = true;
+                break;
+            }
+        }
+
+        if (!hasInclude)
+        {
+            return false;
+        }
+
+        foreach (var exclude in excludes)
+        {
+            if (ContainsPattern(start, next, exclude.Bytes, caseSensitive))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private bool ContainsPattern(long start, long next, byte[] pattern, bool caseSensitive)
+    {
+        return caseSensitive ? ContainsBytes(start, next, pattern) : ContainsBytesAsciiIgnoreCase(start, next, pattern);
+    }
+
     private void ScanChunkAdvanced(
         int chunkIndex,
+        int chunkLength,
         AdvancedPattern[] includes,
         AdvancedPattern[] excludes,
         bool caseSensitive,
@@ -406,36 +746,37 @@ public sealed class LogFileDocument : IDisposable
         Array.Fill(includeLine, startLineIndex);
         Array.Fill(excludeLine, startLineIndex);
 
-        for (var subStart = 0; subStart < chunk.Length; subStart += AdvancedSubBlockSize)
+        for (var subStart = 0; subStart < chunkLength; subStart += AdvancedSubBlockSize)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var subEnd = Math.Min(subStart + AdvancedSubBlockSize, chunk.Length);
+            var subEnd = Math.Min(subStart + AdvancedSubBlockSize, chunkLength);
 
             for (var p = 0; p < includes.Length; p++)
             {
-                ScanWindowForPattern(chunk, chunkBaseOffset, includes[p], caseSensitive, subStart, subEnd, ref includeLine[p], includeHit);
+                ScanWindowForPattern(chunk, chunkLength, chunkBaseOffset, includes[p], caseSensitive, subStart, subEnd, ref includeLine[p], includeHit);
             }
 
             for (var p = 0; p < excludes.Length; p++)
             {
-                ScanWindowForPattern(chunk, chunkBaseOffset, excludes[p], caseSensitive, subStart, subEnd, ref excludeLine[p], excludeHit);
+                ScanWindowForPattern(chunk, chunkLength, chunkBaseOffset, excludes[p], caseSensitive, subStart, subEnd, ref excludeLine[p], excludeHit);
             }
         }
 
         for (var p = 0; p < includes.Length; p++)
         {
-            ScanChunkTailForPattern(chunkIndex, includes[p], caseSensitive, ref includeLine[p], includeHit);
+            ScanChunkTailForPattern(chunkIndex, chunkLength, includes[p], caseSensitive, ref includeLine[p], includeHit);
         }
 
         for (var p = 0; p < excludes.Length; p++)
         {
-            ScanChunkTailForPattern(chunkIndex, excludes[p], caseSensitive, ref excludeLine[p], excludeHit);
+            ScanChunkTailForPattern(chunkIndex, chunkLength, excludes[p], caseSensitive, ref excludeLine[p], excludeHit);
         }
     }
 
     private void ScanWindowForPattern(
         byte[] chunk,
+        int chunkLength,
         long chunkBaseOffset,
         AdvancedPattern pattern,
         bool caseSensitive,
@@ -445,7 +786,7 @@ public sealed class LogFileDocument : IDisposable
         byte[] hit)
     {
         var bytes = pattern.Bytes;
-        var maxStartInChunk = chunk.Length - bytes.Length;
+        var maxStartInChunk = chunkLength - bytes.Length;
         var startLimit = Math.Min(windowEnd - 1, maxStartInChunk);
         if (startLimit < windowStart)
         {
@@ -454,7 +795,7 @@ public sealed class LogFileDocument : IDisposable
 
         if (caseSensitive)
         {
-            var spanEnd = Math.Min(chunk.Length, startLimit + bytes.Length);
+            var spanEnd = Math.Min(chunkLength, startLimit + bytes.Length);
             var searchOffset = windowStart;
 
             while (searchOffset <= startLimit)
@@ -474,7 +815,7 @@ public sealed class LogFileDocument : IDisposable
                 var localOffset = searchOffset + relativeIndex;
                 AdvanceLineIndex(ref currentLineIndex, chunkBaseOffset + localOffset);
                 hit[currentLineIndex] = 1;
-                searchOffset = GetNextSearchOffset(chunkBaseOffset, chunk.Length, localOffset, currentLineIndex);
+                searchOffset = GetNextSearchOffset(chunkBaseOffset, chunkLength, localOffset, currentLineIndex);
             }
 
             return;
@@ -500,7 +841,7 @@ public sealed class LogFileDocument : IDisposable
             {
                 AdvanceLineIndex(ref currentLineIndex, chunkBaseOffset + localOffset);
                 hit[currentLineIndex] = 1;
-                anchorSearchOffset = GetNextSearchOffset(chunkBaseOffset, chunk.Length, localOffset, currentLineIndex) + anchor.PatternOffset;
+                anchorSearchOffset = GetNextSearchOffset(chunkBaseOffset, chunkLength, localOffset, currentLineIndex) + anchor.PatternOffset;
             }
             else
             {
@@ -511,6 +852,7 @@ public sealed class LogFileDocument : IDisposable
 
     private void ScanChunkTailForPattern(
         int chunkIndex,
+        int chunkLength,
         AdvancedPattern pattern,
         bool caseSensitive,
         ref int currentLineIndex,
@@ -519,9 +861,9 @@ public sealed class LogFileDocument : IDisposable
         var chunk = _chunks[chunkIndex];
         var chunkBaseOffset = (long)chunkIndex << ChunkBits;
         var bytes = pattern.Bytes;
-        var tailStart = Math.Max(0, chunk.Length - bytes.Length + 1);
+        var tailStart = Math.Max(0, chunkLength - bytes.Length + 1);
 
-        for (var localOffset = tailStart; localOffset < chunk.Length; localOffset++)
+        for (var localOffset = tailStart; localOffset < chunkLength; localOffset++)
         {
             var absoluteOffset = chunkBaseOffset + localOffset;
             if (absoluteOffset + bytes.Length > FileSize)
@@ -632,14 +974,15 @@ public sealed class LogFileDocument : IDisposable
                 cancellationToken);
         }
 
-        for (var chunkIndex = 0; chunkIndex < _chunks.Length; chunkIndex++)
+        for (var chunkIndex = 0; chunkIndex < _chunks.Count; chunkIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             var chunk = _chunks[chunkIndex];
+            var chunkLength = GetChunkDataLength(chunkIndex);
             var chunkBaseOffset = (long)chunkIndex << ChunkBits;
             currentLineIndex = Math.Max(currentLineIndex, GetLineIndexForOffset(chunkBaseOffset));
-            var maxContainedStart = chunk.Length - pattern.Length;
+            var maxContainedStart = chunkLength - pattern.Length;
 
             if (caseSensitive)
             {
@@ -647,6 +990,7 @@ public sealed class LogFileDocument : IDisposable
                     chunk,
                     chunkBaseOffset,
                     normalizedPattern,
+                    chunkLength,
                     maxContainedStart,
                     ref currentLineIndex,
                     ref lastMatchedLineIndex,
@@ -662,6 +1006,7 @@ public sealed class LogFileDocument : IDisposable
                     chunkBaseOffset,
                     normalizedPattern,
                     ignoreCaseAnchors,
+                    chunkLength,
                     maxContainedStart,
                     ref currentLineIndex,
                     ref lastMatchedLineIndex,
@@ -671,8 +1016,8 @@ public sealed class LogFileDocument : IDisposable
                     cancellationToken);
             }
 
-            var tailStart = Math.Max(0, chunk.Length - pattern.Length + 1);
-            for (var localOffset = tailStart; localOffset < chunk.Length; localOffset++)
+            var tailStart = Math.Max(0, chunkLength - pattern.Length + 1);
+            for (var localOffset = tailStart; localOffset < chunkLength; localOffset++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -696,7 +1041,7 @@ public sealed class LogFileDocument : IDisposable
                     ref matchCount);
             }
 
-            progress?.Report(new LogSearchProgress(Math.Min(chunkBaseOffset + chunk.Length, FileSize), FileSize, matchCount));
+            progress?.Report(new LogSearchProgress(Math.Min(chunkBaseOffset + chunkLength, FileSize), FileSize, matchCount));
         }
 
         if (batch.Count > 0)
@@ -710,7 +1055,7 @@ public sealed class LogFileDocument : IDisposable
 
     private bool ShouldSearchPlainBytesInParallel()
     {
-        return FileSize >= ParallelPlainSearchThreshold && _chunks.Length > 1 && Environment.ProcessorCount > 1;
+        return FileSize >= ParallelPlainSearchThreshold && _chunks.Count > 1 && Environment.ProcessorCount > 1;
     }
 
     private LogSearchSummary SearchPlainBytesParallel(
@@ -721,21 +1066,21 @@ public sealed class LogFileDocument : IDisposable
         IProgress<LogSearchProgress>? progress,
         CancellationToken cancellationToken)
     {
-        var chunkResults = new List<LogSearchResult>?[_chunks.Length];
+        var chunkResults = new List<LogSearchResult>?[_chunks.Count];
         var scannedBytes = 0L;
         var reportedMatches = 0L;
         var parallelOptions = new ParallelOptions
         {
             CancellationToken = cancellationToken,
-            MaxDegreeOfParallelism = Math.Min(Environment.ProcessorCount, _chunks.Length)
+            MaxDegreeOfParallelism = Math.Min(Environment.ProcessorCount, _chunks.Count)
         };
 
-        Parallel.For(0, _chunks.Length, parallelOptions, chunkIndex =>
+        Parallel.For(0, _chunks.Count, parallelOptions, chunkIndex =>
         {
             var results = SearchPlainBytesInChunk(chunkIndex, normalizedPattern, caseSensitive, ignoreCaseAnchors, cancellationToken);
             chunkResults[chunkIndex] = results;
 
-            var bytes = Interlocked.Add(ref scannedBytes, _chunks[chunkIndex].Length);
+            var bytes = Interlocked.Add(ref scannedBytes, GetChunkDataLength(chunkIndex));
             var matches = Interlocked.Add(ref reportedMatches, results?.Count ?? 0);
             progress?.Report(new LogSearchProgress(bytes, FileSize, matches));
         });
@@ -790,11 +1135,12 @@ public sealed class LogFileDocument : IDisposable
         CancellationToken cancellationToken)
     {
         var chunk = _chunks[chunkIndex];
+        var chunkLength = GetChunkDataLength(chunkIndex);
         var chunkBaseOffset = (long)chunkIndex << ChunkBits;
         var currentLineIndex = GetLineIndexForOffset(chunkBaseOffset);
         var lastMatchedLineIndex = -1;
         var results = new List<LogSearchResult>();
-        var maxContainedStart = chunk.Length - normalizedPattern.Length;
+        var maxContainedStart = chunkLength - normalizedPattern.Length;
 
         if (caseSensitive)
         {
@@ -802,6 +1148,7 @@ public sealed class LogFileDocument : IDisposable
                 chunk,
                 chunkBaseOffset,
                 normalizedPattern,
+                chunkLength,
                 maxContainedStart,
                 ref currentLineIndex,
                 ref lastMatchedLineIndex,
@@ -815,6 +1162,7 @@ public sealed class LogFileDocument : IDisposable
                 chunkBaseOffset,
                 normalizedPattern,
                 ignoreCaseAnchors[0],
+                chunkLength,
                 maxContainedStart,
                 ref currentLineIndex,
                 ref lastMatchedLineIndex,
@@ -822,8 +1170,8 @@ public sealed class LogFileDocument : IDisposable
                 cancellationToken);
         }
 
-        var tailStart = Math.Max(0, chunk.Length - normalizedPattern.Length + 1);
-        for (var localOffset = tailStart; localOffset < chunk.Length; localOffset++)
+        var tailStart = Math.Max(0, chunkLength - normalizedPattern.Length + 1);
+        for (var localOffset = tailStart; localOffset < chunkLength; localOffset++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -848,6 +1196,7 @@ public sealed class LogFileDocument : IDisposable
         byte[] chunk,
         long chunkBaseOffset,
         byte[] pattern,
+        int chunkLength,
         int maxContainedStart,
         ref int currentLineIndex,
         ref int lastMatchedLineIndex,
@@ -862,7 +1211,7 @@ public sealed class LogFileDocument : IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var relativeIndex = chunk.AsSpan(searchOffset).IndexOf(pattern);
+            var relativeIndex = chunk.AsSpan(searchOffset, chunkLength - searchOffset).IndexOf(pattern);
             if (relativeIndex < 0)
             {
                 break;
@@ -878,7 +1227,7 @@ public sealed class LogFileDocument : IDisposable
                 onBatch,
                 ref matchCount);
 
-            searchOffset = GetNextSearchOffset(chunkBaseOffset, chunk.Length, localOffset, currentLineIndex);
+            searchOffset = GetNextSearchOffset(chunkBaseOffset, chunkLength, localOffset, currentLineIndex);
         }
     }
 
@@ -887,6 +1236,7 @@ public sealed class LogFileDocument : IDisposable
         long chunkBaseOffset,
         byte[] normalizedPattern,
         AsciiSearchAnchor[] anchors,
+        int chunkLength,
         int maxContainedStart,
         ref int currentLineIndex,
         ref int lastMatchedLineIndex,
@@ -924,7 +1274,7 @@ public sealed class LogFileDocument : IDisposable
                     onBatch,
                     ref matchCount);
 
-                searchOffset = GetNextSearchOffset(chunkBaseOffset, chunk.Length, localOffset, currentLineIndex) + anchor.PatternOffset;
+                searchOffset = GetNextSearchOffset(chunkBaseOffset, chunkLength, localOffset, currentLineIndex) + anchor.PatternOffset;
             }
             else
             {
@@ -937,6 +1287,7 @@ public sealed class LogFileDocument : IDisposable
         byte[] chunk,
         long chunkBaseOffset,
         byte[] pattern,
+        int chunkLength,
         int maxContainedStart,
         ref int currentLineIndex,
         ref int lastMatchedLineIndex,
@@ -949,7 +1300,7 @@ public sealed class LogFileDocument : IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var relativeIndex = chunk.AsSpan(searchOffset).IndexOf(pattern);
+            var relativeIndex = chunk.AsSpan(searchOffset, chunkLength - searchOffset).IndexOf(pattern);
             if (relativeIndex < 0)
             {
                 break;
@@ -957,7 +1308,7 @@ public sealed class LogFileDocument : IDisposable
 
             var localOffset = searchOffset + relativeIndex;
             AddPlainSearchMatchToList(chunkBaseOffset + localOffset, ref currentLineIndex, ref lastMatchedLineIndex, results);
-            searchOffset = GetNextSearchOffset(chunkBaseOffset, chunk.Length, localOffset, currentLineIndex);
+            searchOffset = GetNextSearchOffset(chunkBaseOffset, chunkLength, localOffset, currentLineIndex);
         }
     }
 
@@ -966,6 +1317,7 @@ public sealed class LogFileDocument : IDisposable
         long chunkBaseOffset,
         byte[] normalizedPattern,
         AsciiSearchAnchor anchor,
+        int chunkLength,
         int maxContainedStart,
         ref int currentLineIndex,
         ref int lastMatchedLineIndex,
@@ -992,7 +1344,7 @@ public sealed class LogFileDocument : IDisposable
             if (AsciiBytesMatchAt(chunk.AsSpan(localOffset, normalizedPattern.Length), normalizedPattern))
             {
                 AddPlainSearchMatchToList(chunkBaseOffset + localOffset, ref currentLineIndex, ref lastMatchedLineIndex, results);
-                searchOffset = GetNextSearchOffset(chunkBaseOffset, chunk.Length, localOffset, currentLineIndex) + anchor.PatternOffset;
+                searchOffset = GetNextSearchOffset(chunkBaseOffset, chunkLength, localOffset, currentLineIndex) + anchor.PatternOffset;
             }
             else
             {
@@ -1065,18 +1417,18 @@ public sealed class LogFileDocument : IDisposable
         return (int)Math.Min(nextOffset, chunkLength);
     }
 
-    private static byte[][] LoadFileIntoMemory(string filePath, long fileSize, out List<long> lineStarts)
+    private static List<byte[]> LoadFileIntoMemory(string filePath, long fileSize, out List<long> lineStarts)
     {
         lineStarts = new List<long>(EstimateLineIndexCapacity(fileSize)) { 0 };
 
         if (fileSize == 0)
         {
             lineStarts.Clear();
-            return Array.Empty<byte[]>();
+            return new List<byte[]>();
         }
 
         var chunkCount = checked((int)((fileSize + ChunkSize - 1) / ChunkSize));
-        var chunks = new byte[chunkCount][];
+        var chunks = new List<byte[]>(chunkCount);
         var loaded = 0L;
 
         using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, bufferSize: 1024 * 1024, FileOptions.SequentialScan);
@@ -1086,7 +1438,7 @@ public sealed class LogFileDocument : IDisposable
             var chunkLength = (int)Math.Min(ChunkSize, fileSize - loaded);
             var chunk = new byte[chunkLength];
             ReadExactly(stream, chunk);
-            chunks[chunkIndex] = chunk;
+            chunks.Add(chunk);
 
             var searchStart = 0;
             while (searchStart < chunk.Length)
@@ -1127,10 +1479,15 @@ public sealed class LogFileDocument : IDisposable
 
     private static void ReadExactly(FileStream stream, byte[] buffer)
     {
+        ReadExactly(stream, buffer, 0, buffer.Length);
+    }
+
+    private static void ReadExactly(FileStream stream, byte[] buffer, int offset, int count)
+    {
         var totalRead = 0;
-        while (totalRead < buffer.Length)
+        while (totalRead < count)
         {
-            var read = stream.Read(buffer, totalRead, buffer.Length - totalRead);
+            var read = stream.Read(buffer, offset + totalRead, count - totalRead);
             if (read == 0)
             {
                 throw new EndOfStreamException("Unexpected end of file while loading log into memory.");
@@ -1153,6 +1510,18 @@ public sealed class LogFileDocument : IDisposable
     private long GetLineEndOffset(int lineIndex)
     {
         return lineIndex + 1 < _lineStarts.Count ? _lineStarts[lineIndex + 1] : FileSize;
+    }
+
+    private int GetChunkDataLength(int chunkIndex)
+    {
+        var chunkBaseOffset = (long)chunkIndex << ChunkBits;
+        var remaining = FileSize - chunkBaseOffset;
+        if (remaining <= 0)
+        {
+            return 0;
+        }
+
+        return (int)Math.Min(ChunkSize, remaining);
     }
 
     private byte GetByte(long offset)
@@ -1210,7 +1579,7 @@ public sealed class LogFileDocument : IDisposable
             var chunkIndex = (int)(position >> ChunkBits);
             var chunkOffset = (int)(position & ChunkMask);
             var chunk = _chunks[chunkIndex];
-            var count = Math.Min(destination.Length - copied, chunk.Length - chunkOffset);
+            var count = Math.Min(destination.Length - copied, GetChunkDataLength(chunkIndex) - chunkOffset);
 
             Array.Copy(chunk, chunkOffset, destination, copied, count);
             copied += count;
@@ -1388,7 +1757,7 @@ public sealed class LogFileDocument : IDisposable
             var chunkIndex = (int)(position >> ChunkBits);
             var chunkOffset = (int)(position & ChunkMask);
             var chunk = _chunks[chunkIndex];
-            var count = Math.Min(remaining, chunk.Length - chunkOffset);
+            var count = Math.Min(remaining, GetChunkDataLength(chunkIndex) - chunkOffset);
 
             for (var i = 0; i < count; i++)
             {

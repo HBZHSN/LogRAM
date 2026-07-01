@@ -17,4 +17,9 @@ public sealed class LogSearchResult
     public long Offset { get; }
 
     public string Text => _text ??= _document.GetLineText(LineNumber);
+
+    internal void InvalidateText()
+    {
+        _text = null;
+    }
 }
