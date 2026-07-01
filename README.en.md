@@ -26,6 +26,7 @@ LogRAM = **Log** + **RAM**. It loads the entire log file into memory, then combi
 - **Huge files**: on startup LogRAM measures the free RAM and lets you open a single file up to **80%** of the memory available at launch (the status bar shows the current free RAM and this open limit live).
 - **Blazing search**: plain text uses byte-level search (no per-line decoding); ASCII case-insensitive search is SIMD-vectorized; large files are searched across all CPU cores automatically.
 - **Streaming results**: matches appear as they are found, the search can be cancelled at any time, and progress plus hit count are shown live.
+- **Live refresh**: click **Live** to incrementally read appended content and follow logs that are still being written.
 - **Regex / case sensitivity**: toggle regular expressions and case-sensitive matching.
 - **Advanced search**: combine several keywords as "include any / exclude any" — a line matches when it contains any include term (OR) and none of the exclude terms (NOT); edit them visually in a popup or type the `in(a,b);notin(c,d)` syntax directly.
 - **Click to jump**: click any line in the results and the main view instantly scrolls to and highlights that log line.
@@ -50,7 +51,6 @@ LogRAM = **Log** + **RAM**. It loads the entire log file into memory, then combi
 - **Read-only**: it is a viewer and does not edit files.
 - **Limited encodings**: currently only **UTF-8** and **GBK**; UTF-16 and others are not supported yet.
 - **Single-file view**: one file at a time, no tabs.
-- **No live tail**: after the log grows you must click **Refresh**; it does not follow the file automatically.
 - **The case-insensitive fast path is ASCII-only**: case-insensitive matching that includes non-ASCII text (e.g. Chinese) falls back to a slower decode path.
 - **Initial line index build**: very large files take a few seconds to open while the line index is built (the elapsed time is shown).
 
@@ -95,7 +95,7 @@ Double-click the exe to run — no installation needed.
 ### Basic Usage
 
 1. Click **Open** and pick a `.log` / `.txt` or any text log file.
-2. Files open as UTF-8 by default; the top **Encoding** dropdown switches between UTF-8 / GBK; **Refresh** re-reads the current file.
+2. Files open as UTF-8 by default; the top **Encoding** dropdown switches between UTF-8 / GBK; **Refresh** re-reads the current file, and **Live** reads appended content automatically.
 3. Type a keyword in the search bar and press **Enter** or click **Search**; optionally enable **Regex** and **Match case**, and **Cancel** mid-search.
 4. Click **Advanced** to open the advanced search panel, fill in several "include any (OR)" and "exclude any (NOT)" keywords (ASCII only), then click **Search**; the `in(a,b);notin(c,d)` syntax can also be typed straight into the search bar.
 5. Click any line in the results to jump to and highlight the matching log line in the main view.
