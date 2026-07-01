@@ -23,6 +23,10 @@ public sealed class LocalizedStrings
     public string OpenButtonTip => T("打开日志文件", "Open log file");
     public string RefreshButton => T("刷新", "Refresh");
     public string RefreshButtonTip => T("重新读取当前文件", "Reload current file");
+    public string LiveRefreshOff => T("实时", "Live");
+    public string LiveRefreshOn => T("停止", "Stop");
+    public string LiveRefreshOffTip => T("实时增量刷新当前文件", "Incrementally refresh the current file");
+    public string LiveRefreshOnTip => T("停止实时刷新", "Stop live refresh");
     public string EncodingTip => T("编码", "Encoding");
     public string SettingsButton => T("设置", "Settings");
     public string SettingsButtonTip => T("调整字体、字号与语言", "Adjust font, size and language");

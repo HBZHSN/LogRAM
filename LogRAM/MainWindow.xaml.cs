@@ -29,6 +29,7 @@ public sealed partial class MainWindow : Window
     private const int DwmwaUseImmersiveDarkMode = 20;
     private const double DefaultEditorFontSize = 12;
     private const string DefaultEditorFontFamily = "Consolas";
+    private static readonly TimeSpan LiveRefreshInterval = TimeSpan.FromMilliseconds(500);
 
     private enum AppTheme
     {
@@ -37,6 +38,12 @@ public sealed partial class MainWindow : Window
     }
 
     private readonly record struct ThemeColor(string Dark, string Light);
+
+    private sealed record SearchCriteria(
+        string Pattern,
+        bool UseRegex,
+        bool CaseSensitive,
+        AdvancedSearchQuery? AdvancedQuery);
 
     private static readonly IReadOnlyDictionary<string, ThemeColor> ThemeBrushes = new Dictionary<string, ThemeColor>
     {
@@ -66,6 +73,8 @@ public sealed partial class MainWindow : Window
 
     private readonly RangeObservableCollection<LogLine> _logLines = new();
     private readonly RangeObservableCollection<LogSearchResult> _searchResults = new();
+    private readonly HashSet<long> _searchResultLineNumbers = new();
+    private readonly Dictionary<long, LogSearchResult> _searchResultsByLineNumber = new();
 
     private LogFileDocument? _document;
     private CancellationTokenSource? _searchCts;
@@ -99,6 +108,10 @@ public sealed partial class MainWindow : Window
     private bool _isUpdatingFontSettings;
     private bool _isSettingsInitialized;
     private readonly DispatcherTimer _memoryStatusTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly DispatcherTimer _liveRefreshTimer = new() { Interval = LiveRefreshInterval };
+    private bool _isLiveRefreshEnabled;
+    private bool _isRefreshingLive;
+    private SearchCriteria? _activeSearchCriteria;
 
     public MainWindow()
     {
@@ -121,6 +134,7 @@ public sealed partial class MainWindow : Window
 
         _memoryStatusTimer.Tick += (_, _) => UpdateMemoryStatus();
         _memoryStatusTimer.Start();
+        _liveRefreshTimer.Tick += LiveRefreshTimer_Tick;
         UpdateMemoryStatus();
     }
 
@@ -212,6 +226,22 @@ public sealed partial class MainWindow : Window
         }
 
         await OpenFileAsync(_document.FilePath, GetSelectedEncoding(), _currentLineNumber);
+    }
+
+    private async void LiveRefreshButton_Checked(object sender, RoutedEventArgs e)
+    {
+        SetLiveRefreshEnabled(true);
+        await RefreshLiveAsync();
+    }
+
+    private void LiveRefreshButton_Unchecked(object sender, RoutedEventArgs e)
+    {
+        SetLiveRefreshEnabled(false);
+    }
+
+    private async void LiveRefreshTimer_Tick(object? sender, EventArgs e)
+    {
+        await RefreshLiveAsync();
     }
 
     private async void EncodingComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -435,6 +465,7 @@ public sealed partial class MainWindow : Window
         OpenButton.ToolTip = s.OpenButtonTip;
         RefreshButton.Content = s.RefreshButton;
         RefreshButton.ToolTip = s.RefreshButtonTip;
+        UpdateLiveRefreshText();
         EncodingComboBox.ToolTip = s.EncodingTip;
         SettingsButton.Content = s.SettingsButton;
         SettingsButton.ToolTip = s.SettingsButtonTip;
@@ -691,6 +722,11 @@ public sealed partial class MainWindow : Window
 
     private void SearchContentBox_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
+        if (_isRefreshingLive)
+        {
+            return;
+        }
+
         if (SearchContentBox.SelectionLength > 0)
         {
             return;
@@ -1050,9 +1086,145 @@ public sealed partial class MainWindow : Window
     private void MainWindow_Closed(object? sender, EventArgs args)
     {
         _memoryStatusTimer.Stop();
+        _liveRefreshTimer.Stop();
         _searchCts?.Cancel();
         _searchCts?.Dispose();
         _document?.Dispose();
+    }
+
+    private void SetLiveRefreshEnabled(bool enabled)
+    {
+        _isLiveRefreshEnabled = enabled && _document is not null;
+        if (_isLiveRefreshEnabled)
+        {
+            _liveRefreshTimer.Start();
+        }
+        else
+        {
+            _liveRefreshTimer.Stop();
+        }
+
+        if (LiveRefreshButton.IsChecked != _isLiveRefreshEnabled)
+        {
+            LiveRefreshButton.IsChecked = _isLiveRefreshEnabled;
+        }
+
+        UpdateLiveRefreshText();
+        UpdateControlState();
+    }
+
+    private async Task RefreshLiveAsync()
+    {
+        var document = _document;
+        if (!_isLiveRefreshEnabled || document is null || _isOpening || _isSearching || _isRefreshingLive)
+        {
+            return;
+        }
+
+        _isRefreshingLive = true;
+        var followTail = IsLogViewAtTail(document);
+
+        try
+        {
+            var appendResult = await Task.Run(document.AppendNewContent);
+            if (appendResult.IsTruncated)
+            {
+                await OpenFileAsync(document.FilePath, document.EncodingKind, Math.Max(1, _currentLineNumber));
+                return;
+            }
+
+            if (!appendResult.HasNewContent)
+            {
+                return;
+            }
+
+            var firstChangedLine = Math.Max(1, appendResult.OldLineCount);
+            UpdateLineNumberColumnWidth();
+            ConfigureScrollBar();
+
+            if (followTail)
+            {
+                LoadTailPage();
+            }
+            else if (CurrentLogPageTouches(firstChangedLine))
+            {
+                ReloadCurrentPage();
+            }
+            else
+            {
+                UpdateDocumentStatus();
+            }
+
+            await RefreshLiveSearchResultsAsync(firstChangedLine);
+        }
+        catch (Exception ex)
+        {
+            SearchStatusTextBlock.Text = Loc.S.ReadFailedTitle;
+            await ShowErrorAsync(Loc.S.ReadFailedTitle, DescribeException(ex));
+            SetLiveRefreshEnabled(false);
+        }
+        finally
+        {
+            _isRefreshingLive = false;
+            UpdateControlState();
+        }
+    }
+
+    private async Task RefreshLiveSearchResultsAsync(long firstLineNumber)
+    {
+        var document = _document;
+        var criteria = _activeSearchCriteria;
+        if (document is null || criteria is null)
+        {
+            return;
+        }
+
+        using var cts = new CancellationTokenSource();
+        if (criteria.AdvancedQuery is not null)
+        {
+            await document.AdvancedSearchLinesAsync(
+                firstLineNumber,
+                criteria.AdvancedQuery.Includes,
+                criteria.AdvancedQuery.Excludes,
+                criteria.CaseSensitive,
+                AddLiveSearchResultBatch,
+                cts.Token);
+            return;
+        }
+
+        await document.SearchLinesAsync(
+            firstLineNumber,
+            criteria.Pattern,
+            criteria.UseRegex,
+            criteria.CaseSensitive,
+            AddLiveSearchResultBatch,
+            cts.Token);
+    }
+
+    private bool IsLogViewAtTail(LogFileDocument document)
+    {
+        return _logLines.Count == 0 || _nextOffset >= document.FileSize;
+    }
+
+    private bool CurrentLogPageTouches(long lineNumber)
+    {
+        if (_logLines.Count == 0)
+        {
+            return false;
+        }
+
+        return _logLines[0].LineNumber <= lineNumber && _logLines[^1].LineNumber >= lineNumber;
+    }
+
+    private void LoadTailPage()
+    {
+        if (_document is null)
+        {
+            return;
+        }
+
+        var startLine = Math.Max(1, _document.LineCount - _pageLineCount + 1);
+        LoadPageByLineNumber(startLine, updateScrollBar: true);
     }
 
     private void ApplyTheme(AppTheme theme)
@@ -1080,6 +1252,14 @@ public sealed partial class MainWindow : Window
             ? Loc.S.ThemeTipDark
             : Loc.S.ThemeTipLight;
         _isUpdatingThemeToggle = false;
+    }
+
+    private void UpdateLiveRefreshText()
+    {
+        LiveRefreshButton.Content = _isLiveRefreshEnabled ? Loc.S.LiveRefreshOn : Loc.S.LiveRefreshOff;
+        LiveRefreshButton.ToolTip = _isLiveRefreshEnabled
+            ? Loc.S.LiveRefreshOnTip
+            : Loc.S.LiveRefreshOffTip;
     }
 
     private void ApplyNativeTitleBarTheme()
@@ -1124,7 +1304,8 @@ public sealed partial class MainWindow : Window
             oldDocument = null;
             _highlightedLineNumber = null;
             _logLines.Clear();
-            _searchResults.Clear();
+            ClearSearchResults();
+            _activeSearchCriteria = null;
             ResetLogHorizontalScroll();
             ResetSearchHorizontalScroll();
             RefreshLogTextBoxes();
@@ -1150,6 +1331,11 @@ public sealed partial class MainWindow : Window
         {
             SearchStatusTextBlock.Text = Loc.S.OpenFailedTitle;
             await ShowErrorAsync(Loc.S.OpenFailedTitle, DescribeException(ex));
+            if (_document is null)
+            {
+                SetLiveRefreshEnabled(false);
+            }
+
             UpdateDocumentStatus();
         }
         finally
@@ -1194,7 +1380,7 @@ public sealed partial class MainWindow : Window
     private async Task StartSearchAsync()
     {
         var document = _document;
-        if (document is null || _isSearching || _isOpening)
+        if (document is null || _isSearching || _isOpening || _isRefreshingLive)
         {
             return;
         }
@@ -1221,10 +1407,17 @@ public sealed partial class MainWindow : Window
             advancedQuery = parsedAdvanced;
         }
 
+        var criteria = new SearchCriteria(
+            pattern,
+            RegexButton.IsChecked == true,
+            CaseSensitiveButton.IsChecked == true,
+            advancedQuery);
+
         var searchCts = new CancellationTokenSource();
         _searchCts = searchCts;
         _isSearching = true;
-        _searchResults.Clear();
+        ClearSearchResults();
+        _activeSearchCriteria = null;
         ResetSearchHorizontalScroll();
         ClearSearchTextBoxes();
         SearchProgressBar.Value = 0;
@@ -1242,14 +1435,14 @@ public sealed partial class MainWindow : Window
                 ? document.AdvancedSearchAsync(
                     advancedQuery.Includes,
                     advancedQuery.Excludes,
-                    CaseSensitiveButton.IsChecked == true,
+                    criteria.CaseSensitive,
                     AddSearchResultBatch,
                     progress,
                     searchCts.Token)
                 : document.SearchAsync(
-                    pattern,
-                    RegexButton.IsChecked == true,
-                    CaseSensitiveButton.IsChecked == true,
+                    criteria.Pattern,
+                    criteria.UseRegex,
+                    criteria.CaseSensitive,
                     AddSearchResultBatch,
                     progress,
                     searchCts.Token);
@@ -1257,6 +1450,7 @@ public sealed partial class MainWindow : Window
             var summary = await searchTask;
 
             stopwatch.Stop();
+            _activeSearchCriteria = criteria;
             SearchProgressBar.Value = 100;
             SearchStatusTextBlock.Text = Loc.S.SearchDone(summary.MatchCount, stopwatch.Elapsed.TotalSeconds);
             SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(summary.MatchCount);
@@ -1292,15 +1486,61 @@ public sealed partial class MainWindow : Window
 
     private void AddSearchResultBatch(IReadOnlyList<LogSearchResult> batch)
     {
+        AddSearchResultBatchCore(batch, followWhenAtEnd: false);
+    }
+
+    private void AddLiveSearchResultBatch(IReadOnlyList<LogSearchResult> batch)
+    {
+        AddSearchResultBatchCore(batch, followWhenAtEnd: true);
+    }
+
+    private void AddSearchResultBatchCore(IReadOnlyList<LogSearchResult> batch, bool followWhenAtEnd)
+    {
         _ = Dispatcher.InvokeAsync(() =>
         {
-            _searchResults.AddRange(batch);
+            var wasAtEnd = _searchResults.Count == 0 ||
+                           _searchTopIndex >= Math.Max(0, _searchResults.Count - _searchPageLineCount);
+            var added = new List<LogSearchResult>(batch.Count);
+            var refreshedExisting = false;
 
-            RefreshSearchTextBoxes();
-            UpdateSearchScrollAvailability();
-            UpdateSearchScrollThumb();
-            SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(_searchResults.Count);
+            foreach (var result in batch)
+            {
+                if (_searchResultLineNumbers.Add(result.LineNumber))
+                {
+                    _searchResultsByLineNumber[result.LineNumber] = result;
+                    added.Add(result);
+                }
+                else if (_searchResultsByLineNumber.TryGetValue(result.LineNumber, out var existing))
+                {
+                    existing.InvalidateText();
+                    refreshedExisting = true;
+                }
+            }
+
+            if (added.Count > 0)
+            {
+                _searchResults.AddRange(added);
+                if (followWhenAtEnd && wasAtEnd)
+                {
+                    _searchTopIndex = Math.Max(0, _searchResults.Count - _searchPageLineCount);
+                }
+            }
+
+            if (added.Count > 0 || refreshedExisting)
+            {
+                RefreshSearchTextBoxes();
+                UpdateSearchScrollAvailability();
+                UpdateSearchScrollThumb();
+                SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(_searchResults.Count);
+            }
         }, DispatcherPriority.Background);
+    }
+
+    private void ClearSearchResults()
+    {
+        _searchResults.Clear();
+        _searchResultLineNumbers.Clear();
+        _searchResultsByLineNumber.Clear();
     }
 
     private void RefreshLogTextBoxes()
@@ -1490,13 +1730,14 @@ public sealed partial class MainWindow : Window
     private void UpdateControlState()
     {
         var hasDocument = _document is not null;
-        var canChangeDocument = !_isOpening && !_isSearching;
+        var canChangeDocument = !_isOpening && !_isSearching && !_isRefreshingLive;
 
         OpenButton.IsEnabled = canChangeDocument;
         RefreshButton.IsEnabled = hasDocument && canChangeDocument;
+        LiveRefreshButton.IsEnabled = hasDocument && !_isOpening;
         EncodingComboBox.IsEnabled = hasDocument && canChangeDocument;
-        SearchButton.IsEnabled = hasDocument && !_isSearching && !_isOpening;
-        AdvancedSearchButton.IsEnabled = hasDocument && !_isSearching && !_isOpening;
+        SearchButton.IsEnabled = hasDocument && !_isSearching && !_isOpening && !_isRefreshingLive;
+        AdvancedSearchButton.IsEnabled = hasDocument && !_isSearching && !_isOpening && !_isRefreshingLive;
         CancelSearchButton.IsEnabled = _isSearching;
         UpdateLogScrollAvailability();
         UpdateLogScrollThumb();
@@ -1504,7 +1745,7 @@ public sealed partial class MainWindow : Window
 
     private bool CanScrollLog()
     {
-        return _document is not null && !_isOpening && _document.LineCount > _pageLineCount;
+        return _document is not null && !_isOpening && !_isRefreshingLive && _document.LineCount > _pageLineCount;
     }
 
     private void UpdateLogScrollAvailability()

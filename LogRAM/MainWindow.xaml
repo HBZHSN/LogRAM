@@ -76,6 +76,7 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="112" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
@@ -96,8 +97,16 @@
                         Content="刷新"
                         ToolTip="重新读取当前文件" />
 
+                <ToggleButton x:Name="LiveRefreshButton"
+                              Grid.Column="2"
+                              Margin="0,0,6,0"
+                              Checked="LiveRefreshButton_Checked"
+                              Unchecked="LiveRefreshButton_Unchecked"
+                              Content="实时"
+                              ToolTip="实时增量刷新当前文件" />
+
                 <ComboBox x:Name="EncodingComboBox"
-                          Grid.Column="2"
+                          Grid.Column="3"
                           SelectionChanged="EncodingComboBox_SelectionChanged"
                           ToolTip="编码">
                     <ComboBoxItem Content="UTF-8" />
@@ -105,7 +114,7 @@
                 </ComboBox>
 
                 <StackPanel Grid.Column="0"
-                            Grid.ColumnSpan="6"
+                            Grid.ColumnSpan="7"
                             Orientation="Horizontal"
                             HorizontalAlignment="Center"
                             VerticalAlignment="Center"
@@ -125,7 +134,7 @@
                 </StackPanel>
 
                 <Button x:Name="SettingsButton"
-                        Grid.Column="4"
+                        Grid.Column="5"
                         Margin="0,0,6,0"
                         HorizontalAlignment="Right"
                         Click="SettingsButton_Click"
@@ -211,7 +220,7 @@
                 </Popup>
 
                 <ToggleButton x:Name="ThemeToggleButton"
-                              Grid.Column="5"
+                              Grid.Column="6"
                               HorizontalAlignment="Right"
                               Checked="ThemeToggleButton_Checked"
                               Unchecked="ThemeToggleButton_Unchecked"
