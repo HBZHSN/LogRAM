@@ -19,6 +19,10 @@ public sealed class AppSettings
 
     public List<string> FileAssociations { get; set; } = new() { ".log" };
 
+    public List<string> RecentFiles { get; set; } = new();
+
+    public List<string> SearchHistory { get; set; } = new();
+
     private static string SettingsFilePath
     {
         get
@@ -81,7 +85,20 @@ public sealed class AppSettings
             .Distinct()
             .ToList();
 
+        RecentFiles = NormalizeList(RecentFiles, StringComparer.OrdinalIgnoreCase);
+        SearchHistory = NormalizeList(SearchHistory, StringComparer.Ordinal);
+
         return this;
+    }
+
+    private static List<string> NormalizeList(List<string>? items, StringComparer comparer)
+    {
+        return (items ?? new())
+            .Select(item => item.Trim())
+            .Where(item => item.Length > 0)
+            .Distinct(comparer)
+            .Take(20)
+            .ToList();
     }
 }
 

@@ -29,6 +29,8 @@ public sealed partial class MainWindow : Window
     private const int DwmwaUseImmersiveDarkMode = 20;
     private const double DefaultEditorFontSize = 12;
     private const string DefaultEditorFontFamily = "Consolas";
+    private const int MaxRecentFiles = 20;
+    private const int MaxSearchHistory = 20;
     private static readonly TimeSpan LiveRefreshInterval = TimeSpan.FromMilliseconds(500);
 
     private enum AppTheme
@@ -90,6 +92,7 @@ public sealed partial class MainWindow : Window
     private double _logScrollDragOffsetY;
     private int _searchPageLineCount = MinPageLineCount;
     private int _searchTopIndex;
+    private int _selectedSearchResultIndex = -1;
     private bool _isDraggingSearchScrollThumb;
     private double _searchScrollDragOffsetY;
     private double _logMaxContentWidth;
@@ -129,6 +132,7 @@ public sealed partial class MainWindow : Window
 
         ApplyTheme(_settings.IsDarkTheme ? AppTheme.Dark : AppTheme.Light);
         ApplyLanguage();
+        RefreshSearchHistoryItems();
         ResetStatus();
         UpdateControlState();
 
@@ -268,9 +272,227 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control && e.Key == Key.F)
+        {
+            e.Handled = true;
+            FocusSearchBox();
+            return;
+        }
+
+        if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control && e.Key == Key.G)
+        {
+            e.Handled = true;
+            ShowJumpLineDialog();
+            return;
+        }
+
+        if (e.Key == Key.F3)
+        {
+            e.Handled = true;
+            NavigateSearchResult((Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift ? -1 : 1);
+        }
+    }
+    private void RecentButton_Click(object sender, RoutedEventArgs e)
+    {
+        var files = _settings.RecentFiles.Where(File.Exists).ToList();
+        if (files.Count == 0)
+        {
+            return;
+        }
+
+        var menu = new ContextMenu();
+        foreach (var file in files)
+        {
+            var item = new MenuItem
+            {
+                Header = Path.GetFileName(file),
+                ToolTip = file
+            };
+            item.Click += async (_, _) => await OpenOrLaunchAsync(file);
+            menu.Items.Add(item);
+        }
+
+        ShowButtonMenu(RecentButton, menu);
+    }
+
+    private void SearchHistoryButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_settings.SearchHistory.Count == 0)
+        {
+            return;
+        }
+
+        var menu = new ContextMenu();
+        foreach (var query in _settings.SearchHistory)
+        {
+            var item = new MenuItem { Header = query };
+            item.Click += (_, _) =>
+            {
+                SearchTextBox.Text = query;
+                SearchTextBox.Focus();
+                SearchTextBox.CaretIndex = SearchTextBox.Text.Length;
+            };
+            menu.Items.Add(item);
+        }
+
+        ShowButtonMenu(SearchHistoryButton, menu);
+    }
+
+    private static void ShowButtonMenu(Button button, ContextMenu menu)
+    {
+        button.ContextMenu = menu;
+        menu.PlacementTarget = button;
+        menu.Placement = PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    private void PreviousResultButton_Click(object sender, RoutedEventArgs e)
+    {
+        NavigateSearchResult(-1);
+    }
+
+    private void NextResultButton_Click(object sender, RoutedEventArgs e)
+    {
+        NavigateSearchResult(1);
+    }
+
+    private void FocusSearchBox()
+    {
+        SearchTextBox.Focus();
+        SearchTextBox.SelectAll();
+    }
+
+    private void ShowJumpLineDialog()
+    {
+        if (_document is null)
+        {
+            return;
+        }
+
+        var input = new TextBox
+        {
+            Text = _currentLineNumber.ToString(),
+            MinWidth = 180,
+            Margin = new Thickness(0, 0, 0, 10)
+        };
+        var okButton = new Button
+        {
+            Content = Loc.S.JumpLineButton,
+            IsDefault = true,
+            MinWidth = 64,
+            Margin = new Thickness(0, 0, 6, 0)
+        };
+        var cancelButton = new Button
+        {
+            Content = Loc.S.CancelButton,
+            IsCancel = true,
+            MinWidth = 64
+        };
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+        buttons.Children.Add(okButton);
+        buttons.Children.Add(cancelButton);
+
+        var panel = new StackPanel { Margin = new Thickness(14) };
+        panel.Children.Add(input);
+        panel.Children.Add(buttons);
+
+        var dialog = new Window
+        {
+            Title = Loc.S.JumpLineButton,
+            Owner = this,
+            Content = panel,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = (Brush)FindResource("PanelBackBrush"),
+            Foreground = (Brush)FindResource("TextBrush")
+        };
+
+        okButton.Click += (_, _) =>
+        {
+            if (JumpToLine(input.Text))
+            {
+                dialog.DialogResult = true;
+            }
+        };
+        dialog.Loaded += (_, _) =>
+        {
+            input.Focus();
+            input.SelectAll();
+        };
+        dialog.ShowDialog();
+    }
+
+    private bool JumpToLine(string text)
+    {
+        var document = _document;
+        if (document is null)
+        {
+            return false;
+        }
+
+        text = text.Replace(",", string.Empty).Trim();
+        if (!long.TryParse(text, out var lineNumber))
+        {
+            _ = ShowErrorAsync(Loc.S.CannotJumpTitle, Loc.S.CannotJumpLine);
+            return false;
+        }
+
+        lineNumber = Math.Clamp(lineNumber, 1, document.LineCount);
+        var maxStartLine = Math.Max(1, document.LineCount - _pageLineCount + 1);
+        _highlightedLineNumber = lineNumber;
+        LoadPageByLineNumber(Math.Min(lineNumber, maxStartLine), updateScrollBar: true);
+        return true;
+    }
     private void CancelSearchButton_Click(object sender, RoutedEventArgs e)
     {
         _searchCts?.Cancel();
+    }
+
+    private void ExportSearchButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_searchResults.Count == 0 || _document is null)
+        {
+            return;
+        }
+
+        var baseName = Path.GetFileNameWithoutExtension(_document.FilePath);
+        var keyword = _activeSearchCriteria?.Pattern ?? string.Empty;
+        var defaultFileName = $"{baseName}_{keyword}.log";
+
+        var dialog = new SaveFileDialog
+        {
+            Filter = Loc.S.ExportFilter,
+            FileName = defaultFileName,
+            DefaultExt = ".log",
+            Title = Loc.S.ExportButtonTip
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        try
+        {
+            using var writer = new StreamWriter(dialog.FileName, false, Encoding.UTF8);
+            foreach (var result in _searchResults)
+            {
+                writer.Write(result.LineNumber);
+                writer.Write('\t');
+                writer.WriteLine(result.Text);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "导出失败", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void AdvancedSearchButton_Click(object sender, RoutedEventArgs e)
@@ -467,6 +689,8 @@ public sealed partial class MainWindow : Window
         RefreshButton.ToolTip = s.RefreshButtonTip;
         UpdateLiveRefreshText();
         EncodingComboBox.ToolTip = s.EncodingTip;
+        RecentButton.Content = s.RecentButton;
+        RecentButton.ToolTip = s.RecentButtonTip;
         SettingsButton.Content = s.SettingsButton;
         SettingsButton.ToolTip = s.SettingsButtonTip;
 
@@ -493,10 +717,15 @@ public sealed partial class MainWindow : Window
         AdvancedRunButton.Content = s.SearchButton;
 
         SearchTextBox.ToolTip = s.SearchTextBoxTip;
+        SearchHistoryButton.ToolTip = s.SearchHistoryTip;
+        PreviousResultButton.ToolTip = s.PreviousResultTip;
+        NextResultButton.ToolTip = s.NextResultTip;
         SearchButton.Content = s.SearchButton;
         SearchButton.ToolTip = s.SearchButtonTip;
         CancelSearchButton.Content = s.CancelButton;
         CancelSearchButton.ToolTip = s.CancelButtonTip;
+        ExportSearchButton.Content = s.ExportButton;
+        ExportSearchButton.ToolTip = s.ExportButtonTip;
 
         LogCopyMenuItem.Header = s.MenuCopy;
         LogSelectAllMenuItem.Header = s.MenuSelectAll;
@@ -646,6 +875,41 @@ public sealed partial class MainWindow : Window
         _settings.Save();
     }
 
+    private void SaveRecentFile(string filePath)
+    {
+        MoveToFront(_settings.RecentFiles, Path.GetFullPath(filePath), MaxRecentFiles, StringComparer.OrdinalIgnoreCase);
+        SaveSettings();
+        UpdateControlState();
+    }
+
+    private void SaveSearchHistory(string pattern)
+    {
+        MoveToFront(_settings.SearchHistory, pattern, MaxSearchHistory, StringComparer.Ordinal);
+        SaveSettings();
+        RefreshSearchHistoryItems();
+    }
+
+    private void RefreshSearchHistoryItems()
+    {
+        UpdateControlState();
+    }
+
+    private static void MoveToFront(List<string> items, string value, int maxCount, StringComparer comparer)
+    {
+        value = value.Trim();
+        if (value.Length == 0)
+        {
+            return;
+        }
+
+        items.RemoveAll(item => comparer.Equals(item, value));
+        items.Insert(0, value);
+        if (items.Count > maxCount)
+        {
+            items.RemoveRange(maxCount, items.Count - maxCount);
+        }
+    }
+
     private void ApplyEditorFont()
     {
         LogContentBox.FontFamily = _editorFontFamily;
@@ -744,8 +1008,78 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        _selectedSearchResultIndex = resultIndex;
         SelectBoxLine(SearchContentBox, lineInView);
         NavigateToSearchResult(_searchResults[resultIndex]);
+    }
+
+    private void NavigateSearchResult(int delta)
+    {
+        if (_searchResults.Count == 0)
+        {
+            return;
+        }
+
+        var index = _selectedSearchResultIndex;
+        if (index < 0 || index >= _searchResults.Count)
+        {
+            index = FindSearchResultNearCurrentLine(delta);
+        }
+        else
+        {
+            index = (index + delta + _searchResults.Count) % _searchResults.Count;
+        }
+
+        NavigateToSearchResultIndex(index);
+    }
+
+    private int FindSearchResultNearCurrentLine(int delta)
+    {
+        var lineNumber = _highlightedLineNumber ?? _currentLineNumber;
+        if (delta >= 0)
+        {
+            for (var i = 0; i < _searchResults.Count; i++)
+            {
+                if (_searchResults[i].LineNumber >= lineNumber)
+                {
+                    return i;
+                }
+            }
+
+            return 0;
+        }
+
+        for (var i = _searchResults.Count - 1; i >= 0; i--)
+        {
+            if (_searchResults[i].LineNumber <= lineNumber)
+            {
+                return i;
+            }
+        }
+
+        return _searchResults.Count - 1;
+    }
+
+    private void NavigateToSearchResultIndex(int index)
+    {
+        index = Math.Clamp(index, 0, _searchResults.Count - 1);
+        _selectedSearchResultIndex = index;
+
+        if (index < _searchTopIndex || index >= _searchTopIndex + _searchPageLineCount)
+        {
+            var maxTopIndex = Math.Max(0, _searchResults.Count - _searchPageLineCount);
+            _searchTopIndex = Math.Clamp(index - _searchPageLineCount / 2, 0, maxTopIndex);
+            RefreshSearchTextBoxes();
+            UpdateSearchScrollThumb();
+        }
+
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            var lineInView = _selectedSearchResultIndex - _searchTopIndex;
+            SelectBoxLine(SearchContentBox, lineInView);
+        }));
+
+        NavigateToSearchResult(_searchResults[index]);
     }
 
     private void NavigateToSearchResult(LogSearchResult result)
@@ -1318,6 +1652,7 @@ public sealed partial class MainWindow : Window
             var newDocument = await Task.Run(() => LogFileDocument.Open(filePath, encodingOverride));
             stopwatch.Stop();
             _document = newDocument;
+            SaveRecentFile(filePath);
 
             SelectEncoding(newDocument.EncodingKind);
             UpdateLineNumberColumnWidth();
@@ -1451,6 +1786,7 @@ public sealed partial class MainWindow : Window
 
             stopwatch.Stop();
             _activeSearchCriteria = criteria;
+            SaveSearchHistory(criteria.Pattern);
             SearchProgressBar.Value = 100;
             SearchStatusTextBlock.Text = Loc.S.SearchDone(summary.MatchCount, stopwatch.Elapsed.TotalSeconds);
             SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(summary.MatchCount);
@@ -1532,6 +1868,7 @@ public sealed partial class MainWindow : Window
                 UpdateSearchScrollAvailability();
                 UpdateSearchScrollThumb();
                 SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(_searchResults.Count);
+                UpdateControlState();
             }
         }, DispatcherPriority.Background);
     }
@@ -1541,6 +1878,7 @@ public sealed partial class MainWindow : Window
         _searchResults.Clear();
         _searchResultLineNumbers.Clear();
         _searchResultsByLineNumber.Clear();
+        _selectedSearchResultIndex = -1;
     }
 
     private void RefreshLogTextBoxes()
@@ -1733,11 +2071,15 @@ public sealed partial class MainWindow : Window
         var canChangeDocument = !_isOpening && !_isSearching && !_isRefreshingLive;
 
         OpenButton.IsEnabled = canChangeDocument;
+        RecentButton.IsEnabled = canChangeDocument && _settings.RecentFiles.Count > 0;
         RefreshButton.IsEnabled = hasDocument && canChangeDocument;
         LiveRefreshButton.IsEnabled = hasDocument && !_isOpening;
         EncodingComboBox.IsEnabled = hasDocument && canChangeDocument;
         SearchButton.IsEnabled = hasDocument && !_isSearching && !_isOpening && !_isRefreshingLive;
+        SearchHistoryButton.IsEnabled = _settings.SearchHistory.Count > 0 && !_isOpening && !_isRefreshingLive;
         AdvancedSearchButton.IsEnabled = hasDocument && !_isSearching && !_isOpening && !_isRefreshingLive;
+        PreviousResultButton.IsEnabled = _searchResults.Count > 0 && !_isOpening && !_isRefreshingLive;
+        NextResultButton.IsEnabled = _searchResults.Count > 0 && !_isOpening && !_isRefreshingLive;
         CancelSearchButton.IsEnabled = _isSearching;
         UpdateLogScrollAvailability();
         UpdateLogScrollThumb();

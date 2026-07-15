@@ -17,7 +17,8 @@
         UseLayoutRounding="True"
         AllowDrop="True"
         PreviewDragOver="Window_PreviewDragOver"
-        PreviewDrop="Window_PreviewDrop">
+        PreviewDrop="Window_PreviewDrop"
+        PreviewKeyDown="Window_PreviewKeyDown">
 
     <Grid x:Name="RootGrid" Background="{DynamicResource WindowBackBrush}" SizeChanged="RootGrid_SizeChanged">
         <Grid.Resources>
@@ -77,6 +78,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="112" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
@@ -90,15 +92,22 @@
                         Content="打开"
                         ToolTip="打开日志文件" />
 
-                <Button x:Name="RefreshButton"
+                <Button x:Name="RecentButton"
                         Grid.Column="1"
+                        Margin="0,0,6,0"
+                        Click="RecentButton_Click"
+                        Content="最近"
+                        ToolTip="打开最近文件" />
+
+                <Button x:Name="RefreshButton"
+                        Grid.Column="2"
                         Margin="0,0,6,0"
                         Click="RefreshButton_Click"
                         Content="刷新"
                         ToolTip="重新读取当前文件" />
 
                 <ToggleButton x:Name="LiveRefreshButton"
-                              Grid.Column="2"
+                              Grid.Column="3"
                               Margin="0,0,6,0"
                               Checked="LiveRefreshButton_Checked"
                               Unchecked="LiveRefreshButton_Unchecked"
@@ -106,15 +115,16 @@
                               ToolTip="实时增量刷新当前文件" />
 
                 <ComboBox x:Name="EncodingComboBox"
-                          Grid.Column="3"
+                          Grid.Column="4"
                           SelectionChanged="EncodingComboBox_SelectionChanged"
                           ToolTip="编码">
                     <ComboBoxItem Content="UTF-8" />
                     <ComboBoxItem Content="GBK" />
                 </ComboBox>
 
+
                 <StackPanel Grid.Column="0"
-                            Grid.ColumnSpan="7"
+                            Grid.ColumnSpan="8"
                             Orientation="Horizontal"
                             HorizontalAlignment="Center"
                             VerticalAlignment="Center"
@@ -134,7 +144,7 @@
                 </StackPanel>
 
                 <Button x:Name="SettingsButton"
-                        Grid.Column="5"
+                        Grid.Column="6"
                         Margin="0,0,6,0"
                         HorizontalAlignment="Right"
                         Click="SettingsButton_Click"
@@ -220,7 +230,7 @@
                 </Popup>
 
                 <ToggleButton x:Name="ThemeToggleButton"
-                              Grid.Column="6"
+                              Grid.Column="7"
                               HorizontalAlignment="Right"
                               Checked="ThemeToggleButton_Checked"
                               Unchecked="ThemeToggleButton_Unchecked"
@@ -332,6 +342,7 @@
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
                         <ToggleButton x:Name="CaseSensitiveButton"
@@ -430,19 +441,50 @@
                             </Border>
                         </Popup>
 
-                        <TextBlock x:Name="SearchResultStatusTextBlock"
-                                   Grid.Column="3"
-                                   Margin="6,0,0,0"
-                                   Foreground="{DynamicResource MutedTextBrush}"
-                                   VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="3"
+                                    Orientation="Horizontal"
+                                    VerticalAlignment="Center"
+                                    Margin="6,0,0,0">
+                            <TextBlock x:Name="SearchResultStatusTextBlock"
+                                       Foreground="{DynamicResource MutedTextBrush}"
+                                       VerticalAlignment="Center" />
+                            <Button x:Name="PreviousResultButton"
+                                    Width="28"
+                                    Margin="8,0,2,0"
+                                    VerticalAlignment="Center"
+                                    Click="PreviousResultButton_Click"
+                                    Content="↑"
+                                    ToolTip="上一个搜索结果" />
+                            <Button x:Name="NextResultButton"
+                                    Width="28"
+                                    Margin="0,0,0,0"
+                                    VerticalAlignment="Center"
+                                    Click="NextResultButton_Click"
+                                    Content="↓"
+                                    ToolTip="下一个搜索结果" />
+                        </StackPanel>
 
-                        <TextBox x:Name="SearchTextBox"
-                                 Grid.Column="4"
-                                 Margin="12,0,8,0"
-                                 VerticalAlignment="Center"
-                                 KeyDown="SearchTextBox_KeyDown"
-                                 ToolTip="搜索文本或正则" />
-
+                        <Grid Grid.Column="4"
+                              Margin="12,0,8,0"
+                              VerticalAlignment="Center">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="SearchTextBox"
+                                     Grid.Column="0"
+                                     VerticalAlignment="Center"
+                                     KeyDown="SearchTextBox_KeyDown"
+                                     ToolTip="搜索文本或正则" />
+                            <Button x:Name="SearchHistoryButton"
+                                    Grid.Column="1"
+                                    Width="28"
+                                    Margin="4,0,0,0"
+                                    VerticalAlignment="Center"
+                                    Click="SearchHistoryButton_Click"
+                                    Content="▼"
+                                    ToolTip="搜索历史" />
+                        </Grid>
                         <Button x:Name="SearchButton"
                                 Grid.Column="5"
                                 Margin="0,0,6,0"
@@ -457,6 +499,14 @@
                                 Click="CancelSearchButton_Click"
                                 Content="取消"
                                 ToolTip="取消搜索" />
+
+                        <Button x:Name="ExportSearchButton"
+                                Grid.Column="7"
+                                Margin="12,0,6,0"
+                                VerticalAlignment="Center"
+                                Click="ExportSearchButton_Click"
+                                Content="导出"
+                                ToolTip="导出搜索结果" />
                     </Grid>
                 </Border>
 

@@ -28,6 +28,9 @@ public sealed class LocalizedStrings
     public string LiveRefreshOffTip => T("实时增量刷新当前文件", "Incrementally refresh the current file");
     public string LiveRefreshOnTip => T("停止实时刷新", "Stop live refresh");
     public string EncodingTip => T("编码", "Encoding");
+    public string RecentButton => T("最近", "Recent");
+    public string RecentButtonTip => T("打开最近文件", "Open recent file");
+    public string JumpLineButton => T("跳转", "Go");
     public string SettingsButton => T("设置", "Settings");
     public string SettingsButtonTip => T("调整字体、字号与语言", "Adjust font, size and language");
 
@@ -66,8 +69,15 @@ public sealed class LocalizedStrings
     public string SearchButton => T("搜索", "Search");
     public string SearchButtonTip => T("开始搜索", "Start search");
     public string SearchTextBoxTip => T("搜索文本或正则", "Search text or regex");
+    public string SearchHistoryTip => T("搜索历史", "Search history");
+    public string PreviousResultTip => T("上一个搜索结果（Shift+F3）", "Previous result (Shift+F3)");
+    public string NextResultTip => T("下一个搜索结果（F3）", "Next result (F3)");
     public string CancelButton => T("取消", "Cancel");
     public string CancelButtonTip => T("取消搜索", "Cancel search");
+
+    public string ExportButton => T("导出", "Export");
+    public string ExportButtonTip => T("导出搜索结果", "Export search results");
+    public string ExportFilter => T("日志文件 (*.log)|*.log|文本文件 (*.txt)|*.txt|所有文件 (*.*)|*.*", "Log files (*.log)|*.log|Text files (*.txt)|*.txt|All files (*.*)|*.*");
 
     public string MenuCopy => T("复制", "Copy");
     public string MenuSelectAll => T("全选", "Select all");
@@ -84,12 +94,14 @@ public sealed class LocalizedStrings
     public string ReadFailedTitle => T("读取失败", "Read failed");
     public string SearchFailedTitle => T("搜索失败", "Search failed");
     public string CannotSearchTitle => T("无法搜索", "Cannot search");
+    public string CannotJumpTitle => T("无法跳转", "Cannot jump");
     public string AssocDoneTitle => T("绑定完成", "Done");
     public string AssocFailedTitle => T("绑定失败", "Binding failed");
 
     public string CannotSearchEmpty => T("请输入搜索条件。", "Please enter a search query.");
     public string CannotSearchNoKeyword => T("请至少填写一个包含或排除关键词。", "Please add at least one include or exclude keyword.");
     public string CannotSearchAscii => T("高级搜索关键词仅支持 ASCII 字符。", "Advanced search keywords support ASCII characters only.");
+    public string CannotJumpLine => T("请输入有效行号。", "Please enter a valid line number.");
 
     public string AssocNone => T("无", "None");
     public string AssocSeparator => T("、", ", ");
