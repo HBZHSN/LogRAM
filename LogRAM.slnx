@@ -9,4 +9,6 @@
     <Platform Solution="*|x64" Project="x64" />
     <Platform Solution="*|x86" Project="x86" />
   </Project>
+  <Project Path="LogRAM-cli/LogRAM-cli.csproj" />
+  <Project Path="LogRAM-mcp/LogRAM-mcp.csproj" />
 </Solution>

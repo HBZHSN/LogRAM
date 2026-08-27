@@ -4,13 +4,13 @@
 
 # LogRAM
 
-**全内存超大日志文件查看器**
+一个面向 Windows 的大文件日志查看与搜索工具。
 
 简体中文 | [English](README.en.md)
 
 </div>
 
-LogRAM = **Log** + **RAM**。它把整个日志文件一次性载入内存，再配合字节级 / SIMD / 多核搜索引擎和虚拟化渲染，让你能够**秒开、流畅滚动、瞬时搜索**那些记事本和普通编辑器根本打不开的几 GB 乃至几十 GB 的日志文件。
+LogRAM 将日志完整加载到内存，并使用字节级搜索、SIMD、多核并行和虚拟化渲染处理大文件。它适合查看普通文本编辑器难以打开的数 GB 日志，同时提供 GUI、命令行和 MCP 三种使用方式。
 
 <div align="center">
 
@@ -19,107 +19,131 @@ LogRAM = **Log** + **RAM**。它把整个日志文件一次性载入内存，再
 
 </div>
 
----
+## 主要功能
 
-## 功能特性
-
-- **超大文件**：启动时检测当前可用内存，单文件最大可打开到启动时剩余内存的 **80%**（底部状态栏会实时显示当前剩余内存与可打开上限）。
-- **极速搜索**：纯文本走字节级搜索（无需逐行解码），ASCII 忽略大小写使用 SIMD 向量化，大文件自动多核并行。
-- **流式结果**：边搜边出结果，随时可取消，并实时显示进度与命中数。
-- **实时刷新**：点「实时」后按增量读取追加内容，可自动跟随正在写入的日志。
-- **正则 / 大小写**：支持正则表达式与区分大小写开关。
-- **高级搜索**：通过「包含任一 / 排除任一」组合多个关键词，命中条件为「命中任一包含词（OR）且不含任何排除词（NOT）」；可在弹窗中可视化编辑，也可直接输入 `in(a,b);notin(c,d)` 语法。
-- **点击跳转**：在搜索结果中点击任意一行，主视图立即定位并高亮对应行。
-- **中文友好**：默认按 UTF-8 打开，可手动切换为 GBK。
-- **虚拟化渲染**：只渲染可见行，即使内存里躺着几十 GB 文件，滚动和跳转依然顺滑。
-- **深色 / 浅色主题**：一键切换，并联动 Windows 原生标题栏暗色模式。
-- **中英双语**：内置简体中文与英文界面，可在「设置 → 语言」中随时切换，默认简体中文，选择后即时生效（无需重启）。
-- **绿色免安装**：单文件 exe，提供「带运行时」和「不带运行时」两种版本。
-- **多架构**：x64 / x86 / ARM64。
-
-## 优势
-
-- **快**：全内存 + 字节级匹配 + SIMD + 多核并行，搜索几十 GB 文件通常只需几秒。
-- **能打开别人打不开的文件**：超过编辑器上限的大日志，依然可以浏览、定位、搜索。
-- **UI 不卡**：分页虚拟化渲染 + 自绘滚动条，不受文件大小影响。
-- **零依赖部署**：自包含版本无需安装 .NET 运行时，下载即用。
-
-## 劣势 / 限制
-
-- **吃内存**：整个文件载入内存，需要约等于文件大小的可用内存；可打开上限为启动 LogRAM 时剩余内存的 80%，超过则加载失败。
-- **仅 Windows**：基于 WPF，目前不支持 macOS / Linux。
-- **只读查看**：是日志查看器，不支持编辑文件。
-- **编码有限**：目前仅支持 **UTF-8** 与 **GBK**，暂不支持 UTF-16 等其它编码。
-- **单文件视图**：一次打开一个文件，暂无多标签页。
-- **忽略大小写的高速路径仅对 ASCII 生效**：含非 ASCII（如中文）的忽略大小写匹配会走较慢的解码路径。
-- **首次打开需建立行索引**：超大文件首次打开会有数秒加载时间（界面会显示耗时）。
-
-## 技术栈
-
-- **.NET 8** / **WPF**（`net8.0-windows`）
-- C# 12，`Nullable` 启用
-- `System.Text.Encoding.CodePages`（GBK / CP936 支持）
-- `System.Numerics.Vector<byte>` SIMD 向量化
-- `System.Threading.Tasks.Parallel` 多核并行
-- DWM 原生暗色标题栏（`dwmapi.dll`）、PerMonitorV2 DPI 感知
-
-## 工作原理
-
-- **分块全内存加载**：文件被切成多个 64 MB 的块存入 `byte[][]`，规避单个数组 2 GB / 大对象堆的限制。
-- **行索引 + 二分查找**：加载时扫描换行符构建行起始偏移表，按行号或偏移定位都是 `O(log n)`。
-- **搜索引擎**：
-  - 纯文本：直接在字节上 `Span.IndexOf`（硬件加速），无需解码。
-  - ASCII 忽略大小写：SIMD 向量化大小写归一 + 选取区分度高的「锚点」字节减少误匹配。
-  - 正则 / 非 ASCII 忽略大小写：逐行解码后匹配。
-  - 高级搜索：把「包含 / 排除」关键词各自编译为字节锚点模式，按子块扫描标记每行的命中情况，最后取「命中任一包含词且未命中任何排除词」的行；同样支持 SIMD 与多核并行，关键词仅限 ASCII。
-  - 文件 ≥ 256 MB 时按块并行扫描，再按序合并去重。
-- **虚拟化渲染**：界面只持有当前可见的若干行文本，滚动时按需读取与解码。
+- 打开并搜索大型日志文件；每次打开文件时会按当前可用内存检查容量。
+- 多标签页浏览，并将资源管理器中再次打开的文件转交给现有窗口。
+- 支持纯文本、正则表达式、区分大小写和包含/排除组合搜索。
+- 搜索结果流式显示，可取消、跳转到原文并导出。
+- 支持刷新文件和实时读取追加内容。
+- 支持 UTF-8 和 GBK 编码。
+- 提供最近文件、搜索历史、行号跳转和结果上下文。
+- 支持深色/浅色主题，以及简体中文/英文界面。
+- 提供 GUI、原生命令行工具和 stdio MCP 服务。
 
 ## 系统要求
 
 - Windows 10 1809（build 17763）或更高版本
-- 架构：x64 / x86 / ARM64
-- 足够的可用内存（建议 ≥ 待打开文件大小）
+- x64、x86 或 ARM64
+- 足够容纳日志文件及行索引的可用内存
 
-## 下载与使用
+LogRAM 会把每个已打开文件完整加载到内存，因此多标签页的内存占用会累加。建议可用内存不少于待打开文件的大小。
 
-前往本仓库 **Releases** 页面下载 64 位版本，二选一：
+## 安装
 
-| 版本 | 文件 | 体积 | 说明 |
-| --- | --- | --- | --- |
-| 带运行时（自包含） | `LogRAM-win-x64.exe` | 较大（数十 MB） | **无需安装 .NET**，下载即用，推荐大多数用户 |
-| 不带运行时（框架依赖） | `LogRAM-win-x64-fd.exe` | 极小（< 5 MB） | 需先安装 [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)（x64） |
+从 [Releases](../../releases) 下载 x64 版本：
 
-双击 exe 即可运行，无需安装。
+| 文件 | 运行环境 | 适用场景 |
+| --- | --- | --- |
+| `LogRAM-win-x64.exe` | 已包含 .NET 运行时 | 推荐，大多数电脑下载后可直接运行 |
+| `LogRAM-win-x64-fd.exe` | 需要 [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) | 文件更小 |
 
-### 基本操作
+LogRAM 是免安装的单文件程序，下载后直接运行即可。
 
-1. 点击 **打开**，选择 `.log` / `.txt` 或任意文本日志文件。
-2. 默认按 UTF-8 打开；顶部 **编码** 下拉框可在 UTF-8 / GBK 间手动切换；**刷新** 重新读取当前文件，**实时** 自动读取追加内容。
-3. 在下方搜索栏输入关键词，按 **回车** 或点 **搜索**；可勾选 **正则** 与 **大小写**，搜索过程中可 **取消**。
-4. 点 **高级** 打开高级搜索面板，分别填写若干「包含任一（OR）」与「排除任一（NOT）」关键词（仅 ASCII），点 **搜索** 即可；语法 `in(a,b);notin(c,d)` 也可直接输入到搜索栏。
-5. 点击搜索结果中的任意一行，主视图会跳转并高亮对应日志行。
-6. 右上角按钮切换 **深色 / 浅色** 主题。
-7. 点 **设置** 可调整字体、字号，并在 **语言** 下拉框中切换 **简体中文 / English**（即时生效，无需重启）。
+## GUI 使用
+
+1. 点击“打开”选择日志文件。
+2. 根据文件编码选择 UTF-8 或 GBK。
+3. 输入关键词并按 Enter；需要时启用正则、区分大小写或高级搜索。
+4. 点击搜索结果可跳转到原文；“刷新”重新读取文件，“实时”持续读取追加内容。
+
+常用快捷键：
+
+| 快捷键 | 功能 |
+| --- | --- |
+| `Ctrl+F` | 聚焦搜索框 |
+| `Ctrl+G` | 跳转到指定行 |
+| `F3` / `Shift+F3` | 下一个 / 上一个搜索结果 |
+
+高级搜索支持“包含任一”和“排除任一”，也可直接使用以下语法：
+
+```text
+in(error,warning);notin(retry,ignored)
+```
+
+## 命令行
+
+`LogRAM-cli` 使用与 GUI 相同的搜索引擎，支持 OR、AND、NOT、正则、行范围、上下文、结果上限和 JSON 输出。
+
+```powershell
+# 包含 error 或 warning，同时包含 orderId=42，并排除 retry
+LogRAM-cli.exe app.log --any error --any warning --all orderId=42 --exclude retry --context 3 --max-count 100 --json
+
+# 查询指定行范围并只输出命中数
+LogRAM-cli.exe app.log timeout --start-line 100000 --end-line 200000 --count-only
+```
+
+运行 `LogRAM-cli.exe --help` 查看全部参数。
+
+## MCP 服务
+
+`LogRAM-mcp` 是供 AI 客户端使用的 stdio MCP 服务。日志首次查询时加载到内存，并在 MCP 进程存活期间复用，适合对同一大文件进行多次搜索和局部读取。
+
+提供以下工具：
+
+- `search_log`：搜索日志，支持多条件、正则、行范围和上下文。
+- `read_log`：按行号读取局部内容。
+- `list_open_logs`：查看已缓存文件和内存占用。
+- `close_log`：释放一个或全部已缓存日志。
+
+发布并安装：
+
+```powershell
+dotnet publish LogRAM-mcp/LogRAM-mcp.csproj -c Release -p:PublishProfile=win-x64
+.\scripts\install-mcp.ps1 -ConfigureCodex
+```
+
+也可以将发布后的程序配置到其他 MCP 客户端：
+
+```json
+{
+  "mcpServers": {
+    "logram": {
+      "command": "C:\\path\\to\\LogRAM-mcp.exe"
+    }
+  }
+}
+```
 
 ## 从源码构建
 
 需要 [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)。
 
 ```powershell
-# 还原并运行
+# 运行 GUI
 dotnet run --project LogRAM/LogRAM.csproj
 
-# 发布：带运行时（自包含单文件，对应 Releases 的 LogRAM-win-x64.exe）
+# 运行 CLI
+dotnet run --project LogRAM-cli/LogRAM-cli.csproj -- app.log error
+
+# 发布自包含 GUI
 dotnet publish LogRAM/LogRAM.csproj -c Release -p:PublishProfile=win-x64
 
-# 发布：不带运行时（框架依赖单文件，体积最小）
+# 发布依赖运行时的 GUI
 dotnet publish LogRAM/LogRAM.csproj -c Release -p:PublishProfile=win-x64-fd
+
+# 发布 MCP 服务
+dotnet publish LogRAM-mcp/LogRAM-mcp.csproj -c Release -p:PublishProfile=win-x64
 ```
 
-产物位于 `LogRAM/bin/Release/net8.0-windows/win-x64/publish[-fd]/` 目录下。
-另提供 `win-x86`、`win-arm64` 发布配置。
+## 限制
+
+- 仅支持 Windows，且只能查看日志，不能编辑。
+- 每个文件都会完整载入内存。
+- 目前只支持 UTF-8 和 GBK。
+- 忽略大小写的高速搜索仅适用于 ASCII；非 ASCII 内容会使用较慢的解码路径。
+- 首次打开大文件时需要建立行索引。
 
 ## 许可证
 
-详见仓库根目录的 `LICENSE` 文件。
+本项目采用 [MIT License](LICENSE)。

@@ -7,7 +7,13 @@ internal sealed class CliOptions
 {
     public string FilePath { get; private set; } = string.Empty;
 
-    public string Keyword { get; private set; } = string.Empty;
+    public string? Pattern { get; private set; }
+
+    public List<string> IncludeAny { get; } = new();
+
+    public List<string> IncludeAll { get; } = new();
+
+    public List<string> Exclude { get; } = new();
 
     public string? OutputPath { get; private set; }
 
@@ -17,6 +23,20 @@ internal sealed class CliOptions
 
     public bool ShowLineNumber { get; private set; }
 
+    public bool Json { get; private set; }
+
+    public bool CountOnly { get; private set; }
+
+    public int Before { get; private set; }
+
+    public int After { get; private set; }
+
+    public int MaxCount { get; private set; } = int.MaxValue;
+
+    public long StartLine { get; private set; } = 1;
+
+    public long? EndLine { get; private set; }
+
     public LogTextEncoding Encoding { get; private set; } = LogTextEncoding.Utf8;
 
     public static bool LooksLikeCli(string[] args)
@@ -24,12 +44,18 @@ internal sealed class CliOptions
         var positionals = 0;
         for (var i = 0; i < args.Length; i++)
         {
-            var arg = args[i];
-            switch (arg)
+            switch (args[i])
             {
                 case "-s":
                 case "--search":
-                    return true;
+                case "-i":
+                case "--any":
+                case "--include-any":
+                case "-a":
+                case "--all":
+                case "--include-all":
+                case "-x":
+                case "--exclude":
                 case "-h":
                 case "--help":
                     return true;
@@ -37,17 +63,20 @@ internal sealed class CliOptions
                 case "--output":
                 case "-e":
                 case "--encoding":
+                case "-B":
+                case "--before":
+                case "-A":
+                case "--after":
+                case "-C":
+                case "--context":
+                case "-m":
+                case "--max-count":
+                case "--start-line":
+                case "--end-line":
                     i++;
                     break;
-                case "-r":
-                case "--regex":
-                case "-c":
-                case "--case-sensitive":
-                case "-n":
-                case "--line-number":
-                    break;
                 default:
-                    if (!arg.StartsWith('-'))
+                    if (!args[i].StartsWith('-'))
                     {
                         positionals++;
                     }
@@ -63,8 +92,6 @@ internal sealed class CliOptions
     {
         options = new CliOptions();
         error = null;
-
-        string? keyword = null;
         var positionals = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
@@ -74,32 +101,40 @@ internal sealed class CliOptions
             {
                 case "-o":
                 case "--output":
-                    if (!TryTakeValue(args, ref i, out var outputValue))
-                    {
-                        error = $"选项 {arg} 缺少参数值。";
-                        return false;
-                    }
-
-                    options.OutputPath = outputValue;
+                    if (!Take(args, ref i, arg, out var output, out error)) return false;
+                    options.OutputPath = output;
                     break;
                 case "-s":
                 case "--search":
-                    if (!TryTakeValue(args, ref i, out var searchValue))
+                    if (!Take(args, ref i, arg, out var pattern, out error)) return false;
+                    if (options.Pattern is not null)
                     {
-                        error = $"选项 {arg} 缺少参数值。";
+                        error = "--search 只能指定一次；多关键词请使用 --any/--all。";
                         return false;
                     }
 
-                    keyword = searchValue;
+                    options.Pattern = pattern;
+                    break;
+                case "-i":
+                case "--any":
+                case "--include-any":
+                    if (!Take(args, ref i, arg, out var any, out error)) return false;
+                    options.IncludeAny.Add(any);
+                    break;
+                case "-a":
+                case "--all":
+                case "--include-all":
+                    if (!Take(args, ref i, arg, out var all, out error)) return false;
+                    options.IncludeAll.Add(all);
+                    break;
+                case "-x":
+                case "--exclude":
+                    if (!Take(args, ref i, arg, out var exclude, out error)) return false;
+                    options.Exclude.Add(exclude);
                     break;
                 case "-e":
                 case "--encoding":
-                    if (!TryTakeValue(args, ref i, out var encodingValue))
-                    {
-                        error = $"选项 {arg} 缺少参数值。";
-                        return false;
-                    }
-
+                    if (!Take(args, ref i, arg, out var encodingValue, out error)) return false;
                     if (!TryParseEncoding(encodingValue, out var encoding))
                     {
                         error = $"不支持的编码：{encodingValue}（可选 utf8 或 gbk）。";
@@ -107,6 +142,34 @@ internal sealed class CliOptions
                     }
 
                     options.Encoding = encoding;
+                    break;
+                case "-B":
+                case "--before":
+                    if (!TakeNonNegativeInt(args, ref i, arg, out var before, out error)) return false;
+                    options.Before = before;
+                    break;
+                case "-A":
+                case "--after":
+                    if (!TakeNonNegativeInt(args, ref i, arg, out var after, out error)) return false;
+                    options.After = after;
+                    break;
+                case "-C":
+                case "--context":
+                    if (!TakeNonNegativeInt(args, ref i, arg, out var context, out error)) return false;
+                    options.Before = options.After = context;
+                    break;
+                case "-m":
+                case "--max-count":
+                    if (!TakePositiveInt(args, ref i, arg, out var maxCount, out error)) return false;
+                    options.MaxCount = maxCount;
+                    break;
+                case "--start-line":
+                    if (!TakePositiveLong(args, ref i, arg, out var startLine, out error)) return false;
+                    options.StartLine = startLine;
+                    break;
+                case "--end-line":
+                    if (!TakePositiveLong(args, ref i, arg, out var endLine, out error)) return false;
+                    options.EndLine = endLine;
                     break;
                 case "-r":
                 case "--regex":
@@ -120,9 +183,14 @@ internal sealed class CliOptions
                 case "--line-number":
                     options.ShowLineNumber = true;
                     break;
+                case "--json":
+                    options.Json = true;
+                    break;
+                case "--count-only":
+                    options.CountOnly = true;
+                    break;
                 case "-h":
                 case "--help":
-                    error = null;
                     return false;
                 default:
                     if (arg.StartsWith('-'))
@@ -142,28 +210,92 @@ internal sealed class CliOptions
             return false;
         }
 
-        options.FilePath = positionals[0];
-
-        keyword ??= positionals.Count > 1 ? positionals[1] : null;
-        if (string.IsNullOrEmpty(keyword))
+        if (positionals.Count > 2)
         {
-            error = "缺少搜索关键词参数。";
+            error = "位置参数过多；多关键词请使用 --any/--all。";
             return false;
         }
 
-        options.Keyword = keyword;
+        options.FilePath = positionals[0];
+        if (options.Pattern is null && positionals.Count == 2)
+        {
+            options.Pattern = positionals[1];
+        }
+
+        if (options.Pattern is null && options.IncludeAny.Count == 0 && options.IncludeAll.Count == 0 && options.Exclude.Count == 0)
+        {
+            error = "缺少搜索条件。";
+            return false;
+        }
+
+        if (options.UseRegex && options.Pattern is null)
+        {
+            error = "--regex 需要 --search 或第二个位置参数。";
+            return false;
+        }
+
+        if (options.EndLine < options.StartLine)
+        {
+            error = "--end-line 不能小于 --start-line。";
+            return false;
+        }
+
+        if (options.Json && options.CountOnly)
+        {
+            error = "--json 与 --count-only 不能同时使用。";
+            return false;
+        }
+
         return true;
     }
 
-    private static bool TryTakeValue(string[] args, ref int index, out string value)
+    private static bool Take(string[] args, ref int index, string option, out string value, out string? error)
     {
         if (index + 1 >= args.Length)
         {
             value = string.Empty;
+            error = $"选项 {option} 缺少参数值。";
             return false;
         }
 
         value = args[++index];
+        error = null;
+        return true;
+    }
+
+    private static bool TakeNonNegativeInt(string[] args, ref int index, string option, out int value, out string? error)
+    {
+        value = 0;
+        if (!Take(args, ref index, option, out var text, out error) || !int.TryParse(text, out value) || value < 0)
+        {
+            error ??= $"选项 {option} 需要非负整数。";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TakePositiveInt(string[] args, ref int index, string option, out int value, out string? error)
+    {
+        value = 0;
+        if (!Take(args, ref index, option, out var text, out error) || !int.TryParse(text, out value) || value <= 0)
+        {
+            error ??= $"选项 {option} 需要正整数。";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TakePositiveLong(string[] args, ref int index, string option, out long value, out string? error)
+    {
+        value = 0;
+        if (!Take(args, ref index, option, out var text, out error) || !long.TryParse(text, out value) || value <= 0)
+        {
+            error ??= $"选项 {option} 需要正整数。";
+            return false;
+        }
+
         return true;
     }
 

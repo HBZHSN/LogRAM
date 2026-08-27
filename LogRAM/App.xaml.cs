@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -7,6 +9,8 @@ namespace LogRAM
 {
     public partial class App : Application
     {
+        private SingleInstanceCoordinator? _singleInstance;
+
         protected override async void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
@@ -21,21 +25,35 @@ namespace LogRAM
                     return;
                 }
 
+                var filePaths = GetExistingFilePaths(e.Args);
+                _singleInstance = new SingleInstanceCoordinator();
+                if (!_singleInstance.IsPrimary)
+                {
+                    if (await _singleInstance.TryForwardAsync(filePaths))
+                    {
+                        _singleInstance.Dispose();
+                        _singleInstance = null;
+                        Shutdown();
+                        return;
+                    }
+
+                    _singleInstance.Dispose();
+                    _singleInstance = null;
+                }
+
                 var window = new MainWindow();
                 window.Show();
-
-                if (e.Args.Length > 0)
+                _singleInstance?.Start(filePath =>
                 {
-                    var filePath = e.Args[0];
-                    if (!Path.IsPathFullyQualified(filePath))
+                    if (!Dispatcher.HasShutdownStarted)
                     {
-                        filePath = Path.GetFullPath(filePath);
+                        Dispatcher.BeginInvoke(new Action(() => _ = window.HandleExternalOpenAsync(filePath)));
                     }
+                });
 
-                    if (File.Exists(filePath))
-                    {
-                        await window.OpenFileFromArgsAsync(filePath);
-                    }
+                foreach (var filePath in filePaths)
+                {
+                    await window.OpenFileFromArgsAsync(filePath);
                 }
             }
             catch (Exception ex)
@@ -43,6 +61,21 @@ namespace LogRAM
                 ShowUnhandledError(ex);
                 Shutdown(1);
             }
+        }
+
+        protected override void OnExit(ExitEventArgs e)
+        {
+            _singleInstance?.Dispose();
+            base.OnExit(e);
+        }
+
+        private static IReadOnlyList<string> GetExistingFilePaths(IEnumerable<string> arguments)
+        {
+            return arguments
+                .Select(path => Path.IsPathFullyQualified(path) ? path : Path.GetFullPath(path))
+                .Where(File.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
         }
 
         private void App_DispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)

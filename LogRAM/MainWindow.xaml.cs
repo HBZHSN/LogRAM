@@ -1,9 +1,11 @@
 using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Principal;
@@ -47,6 +49,71 @@ public sealed partial class MainWindow : Window
         bool CaseSensitive,
         AdvancedSearchQuery? AdvancedQuery);
 
+    private sealed class DocumentTab(string filePath) : IDisposable
+    {
+        public string FilePath { get; } = filePath;
+        public string DisplayName => Path.GetFileName(FilePath);
+        public string CloseTip => Loc.S.CloseTabTip;
+        public LogFileDocument? Document { get; set; }
+        public LogTextEncoding EncodingKind { get; private set; } = LogTextEncoding.Utf8;
+        public RangeObservableCollection<LogLine> LogLines { get; } = new();
+        public RangeObservableCollection<LogSearchResult> SearchResults { get; } = new();
+        public HashSet<long> SearchResultLineNumbers { get; } = new();
+        public Dictionary<long, LogSearchResult> SearchResultsByLineNumber { get; } = new();
+        public long? HighlightedLineNumber { get; set; }
+        public long CurrentOffset { get; set; }
+        public long CurrentLineNumber { get; set; } = 1;
+        public long NextOffset { get; set; }
+        public int SearchTopIndex { get; set; }
+        public int SelectedSearchResultIndex { get; set; } = -1;
+        public double LogMaxContentWidth { get; set; }
+        public double SearchMaxContentWidth { get; set; }
+        public bool LogReserveHScroll { get; set; }
+        public bool SearchReserveHScroll { get; set; }
+        public bool IsLiveRefreshEnabled { get; set; }
+        public SearchCriteria? ActiveSearchCriteria { get; set; }
+        public string SearchText { get; set; } = string.Empty;
+        public bool CaseSensitive { get; set; }
+        public bool UseRegex { get; set; }
+        public string SearchStatus { get; set; } = string.Empty;
+
+        public void ReleaseDocument()
+        {
+            var document = Document;
+            if (document is not null)
+            {
+                EncodingKind = document.EncodingKind;
+            }
+
+            foreach (var result in SearchResults)
+            {
+                result.SetDocument(null);
+            }
+
+            Document = null;
+            document?.Dispose();
+        }
+
+        public void RestoreDocument(LogFileDocument document)
+        {
+            Document = document;
+            EncodingKind = document.EncodingKind;
+            foreach (var result in SearchResults)
+            {
+                result.SetDocument(document);
+            }
+        }
+
+        public void Dispose()
+        {
+            ReleaseDocument();
+            LogLines.Clear();
+            SearchResults.Clear();
+            SearchResultLineNumbers.Clear();
+            SearchResultsByLineNumber.Clear();
+        }
+    }
+
     private static readonly IReadOnlyDictionary<string, ThemeColor> ThemeBrushes = new Dictionary<string, ThemeColor>
     {
         ["WindowBackBrush"] = new("#181B1F", "#F2F4F7"),
@@ -73,12 +140,15 @@ public sealed partial class MainWindow : Window
         ["ErrorBrush"] = new("#D75F5F", "#B42318")
     };
 
-    private readonly RangeObservableCollection<LogLine> _logLines = new();
-    private readonly RangeObservableCollection<LogSearchResult> _searchResults = new();
-    private readonly HashSet<long> _searchResultLineNumbers = new();
-    private readonly Dictionary<long, LogSearchResult> _searchResultsByLineNumber = new();
+    private RangeObservableCollection<LogLine> _logLines = new();
+    private RangeObservableCollection<LogSearchResult> _searchResults = new();
+    private HashSet<long> _searchResultLineNumbers = new();
+    private Dictionary<long, LogSearchResult> _searchResultsByLineNumber = new();
+    private readonly ObservableCollection<DocumentTab> _tabs = new();
+    private readonly SemaphoreSlim _openGate = new(1, 1);
 
     private LogFileDocument? _document;
+    private DocumentTab? _currentTab;
     private CancellationTokenSource? _searchCts;
     private int _pageLineCount = MinPageLineCount;
     private long? _highlightedLineNumber;
@@ -111,18 +181,29 @@ public sealed partial class MainWindow : Window
     private bool _isUpdatingFontSettings;
     private bool _isSettingsInitialized;
     private readonly DispatcherTimer _memoryStatusTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly DispatcherTimer _inactiveMemoryReleaseTimer = new();
     private readonly DispatcherTimer _liveRefreshTimer = new() { Interval = LiveRefreshInterval };
     private bool _isLiveRefreshEnabled;
     private bool _isRefreshingLive;
+    private bool _isChangingTabSelection;
+    private bool _documentsReleasedForInactivity;
+    private bool _isRestoringAfterInactivity;
     private SearchCriteria? _activeSearchCriteria;
 
     public MainWindow()
     {
         InitializeComponent();
 
+        DocumentTabsListBox.ItemsSource = _tabs;
         EncodingComboBox.SelectedIndex = 0;
         SourceInitialized += (_, _) => ApplyNativeTitleBarTheme();
+        Activated += MainWindow_Activated;
+        Deactivated += MainWindow_Deactivated;
         Closed += MainWindow_Closed;
+
+        Debug.Assert(AppSettings.NormalizeInactiveMemoryReleaseMinutes(0) == 0);
+        Debug.Assert(AppSettings.NormalizeInactiveMemoryReleaseMinutes(60) == 60);
+        Debug.Assert(AppSettings.NormalizeInactiveMemoryReleaseMinutes(999) == 5);
 
         Loc.SetLanguage(Loc.Parse(_settings.Language));
 
@@ -138,6 +219,12 @@ public sealed partial class MainWindow : Window
 
         _memoryStatusTimer.Tick += (_, _) => UpdateMemoryStatus();
         _memoryStatusTimer.Start();
+        if (_settings.InactiveMemoryReleaseMinutes > 0)
+        {
+            _inactiveMemoryReleaseTimer.Interval = TimeSpan.FromMinutes(_settings.InactiveMemoryReleaseMinutes);
+        }
+
+        _inactiveMemoryReleaseTimer.Tick += InactiveMemoryReleaseTimer_Tick;
         _liveRefreshTimer.Tick += LiveRefreshTimer_Tick;
         UpdateMemoryStatus();
     }
@@ -147,7 +234,7 @@ public sealed partial class MainWindow : Window
         var dialog = new OpenFileDialog
         {
             CheckFileExists = true,
-            Multiselect = false,
+            Multiselect = true,
             Filter = Loc.S.OpenDialogFilter,
             Title = Loc.S.OpenDialogTitle
         };
@@ -157,47 +244,64 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        await OpenOrLaunchAsync(dialog.FileName);
-    }
-
-    private async Task OpenOrLaunchAsync(string filePath)
-    {
-        // 已打开文件（或正忙）时，再次打开则启动新的 LogRAM 实例，避免覆盖当前文件
-        if (_document is not null || _isOpening || _isSearching)
+        foreach (var filePath in dialog.FileNames)
         {
-            LaunchNewInstance(filePath);
-            return;
+            await OpenOrSelectTabAsync(filePath);
         }
-
-        await OpenFileAsync(filePath, encodingOverride: null, startLineNumber: 1);
     }
 
-    private void LaunchNewInstance(string filePath)
+    private async Task OpenOrSelectTabAsync(string filePath)
     {
+        filePath = Path.GetFullPath(filePath);
+        await _openGate.WaitAsync();
         try
         {
-            var exePath = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(exePath))
+            CancelCurrentSearch();
+            while (_isOpening || _isSearching || _isRefreshingLive)
             {
+                await Task.Delay(20);
+            }
+
+            var existing = _tabs.FirstOrDefault(tab =>
+                string.Equals(tab.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+            if (existing is not null)
+            {
+                SelectDocumentTab(existing);
                 return;
             }
 
-            var startInfo = new ProcessStartInfo
+            var previous = _currentTab;
+            var tab = new DocumentTab(filePath);
+            _tabs.Add(tab);
+            SelectDocumentTab(tab);
+            await OpenFileAsync(filePath, encodingOverride: null, startLineNumber: 1);
+            if (_document is null)
             {
-                FileName = exePath,
-                UseShellExecute = false
-            };
-            startInfo.ArgumentList.Add(filePath);
-            Process.Start(startInfo);
+                _isChangingTabSelection = true;
+                _tabs.Remove(tab);
+                _isChangingTabSelection = false;
+                SelectDocumentTab(previous is not null && _tabs.Contains(previous) ? previous : _tabs.LastOrDefault());
+                tab.Dispose();
+                return;
+            }
+
+            SaveCurrentTabState();
         }
-        catch (Exception ex)
+        finally
         {
-            _ = ShowErrorAsync(Loc.S.OpenFailedTitle, DescribeException(ex));
+            _openGate.Release();
         }
     }
 
     private void Window_PreviewDragOver(object sender, DragEventArgs e)
     {
+        if (_isRestoringAfterInactivity)
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
         e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop)
             ? DragDropEffects.Copy
             : DragDropEffects.None;
@@ -206,6 +310,12 @@ public sealed partial class MainWindow : Window
 
     private async void Window_PreviewDrop(object sender, DragEventArgs e)
     {
+        if (_isRestoringAfterInactivity)
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (e.Data.GetData(DataFormats.FileDrop) is not string[] files || files.Length == 0)
         {
             return;
@@ -217,9 +327,166 @@ public sealed partial class MainWindow : Window
         {
             if (File.Exists(file))
             {
-                await OpenOrLaunchAsync(file);
+                await OpenOrSelectTabAsync(file);
             }
         }
+    }
+
+    private void DocumentTabsListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isChangingTabSelection)
+        {
+            return;
+        }
+
+        if (_isOpening || _isSearching || _isRefreshingLive)
+        {
+            _isChangingTabSelection = true;
+            DocumentTabsListBox.SelectedItem = _currentTab;
+            _isChangingTabSelection = false;
+            return;
+        }
+
+        SelectDocumentTab(DocumentTabsListBox.SelectedItem as DocumentTab);
+    }
+
+    private void CloseDocumentTabButton_Click(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        if (_isOpening || _isSearching || _isRefreshingLive || sender is not Button { Tag: DocumentTab tab })
+        {
+            return;
+        }
+
+        var index = _tabs.IndexOf(tab);
+        _isChangingTabSelection = true;
+        _tabs.Remove(tab);
+        _isChangingTabSelection = false;
+
+        if (ReferenceEquals(tab, _currentTab))
+        {
+            SelectDocumentTab(_tabs.Count == 0 ? null : _tabs[Math.Min(index, _tabs.Count - 1)]);
+        }
+
+        tab.Dispose();
+        ReleaseUnusedMemory();
+        UpdateMemoryStatus();
+    }
+
+    private void SaveCurrentTabState()
+    {
+        if (_currentTab is null)
+        {
+            return;
+        }
+
+        _currentTab.Document = _document;
+        _currentTab.HighlightedLineNumber = _highlightedLineNumber;
+        _currentTab.CurrentOffset = _currentOffset;
+        _currentTab.CurrentLineNumber = _currentLineNumber;
+        _currentTab.NextOffset = _nextOffset;
+        _currentTab.SearchTopIndex = _searchTopIndex;
+        _currentTab.SelectedSearchResultIndex = _selectedSearchResultIndex;
+        _currentTab.LogMaxContentWidth = _logMaxContentWidth;
+        _currentTab.SearchMaxContentWidth = _searchMaxContentWidth;
+        _currentTab.LogReserveHScroll = _logReserveHScroll;
+        _currentTab.SearchReserveHScroll = _searchReserveHScroll;
+        _currentTab.IsLiveRefreshEnabled = _isLiveRefreshEnabled;
+        _currentTab.ActiveSearchCriteria = _activeSearchCriteria;
+        _currentTab.SearchText = SearchTextBox.Text;
+        _currentTab.CaseSensitive = CaseSensitiveButton.IsChecked == true;
+        _currentTab.UseRegex = RegexButton.IsChecked == true;
+        _currentTab.SearchStatus = SearchStatusTextBlock.Text;
+    }
+
+    private void SelectDocumentTab(DocumentTab? tab)
+    {
+        if (ReferenceEquals(tab, _currentTab))
+        {
+            _isChangingTabSelection = true;
+            DocumentTabsListBox.SelectedItem = tab;
+            _isChangingTabSelection = false;
+            return;
+        }
+
+        SaveCurrentTabState();
+        _liveRefreshTimer.Stop();
+        _currentTab = tab;
+
+        if (tab is null)
+        {
+            _document = null;
+            _logLines = new RangeObservableCollection<LogLine>();
+            _searchResults = new RangeObservableCollection<LogSearchResult>();
+            _searchResultLineNumbers = new HashSet<long>();
+            _searchResultsByLineNumber = new Dictionary<long, LogSearchResult>();
+            _highlightedLineNumber = null;
+            _currentOffset = 0;
+            _currentLineNumber = 1;
+            _nextOffset = 0;
+            _searchTopIndex = 0;
+            _selectedSearchResultIndex = -1;
+            _activeSearchCriteria = null;
+            _isLiveRefreshEnabled = false;
+            SearchTextBox.Clear();
+            CaseSensitiveButton.IsChecked = false;
+            RegexButton.IsChecked = false;
+            ResetLogHorizontalScroll();
+            ResetSearchHorizontalScroll();
+            RefreshLogTextBoxes();
+            ClearSearchTextBoxes();
+            ResetStatus();
+        }
+        else
+        {
+            _document = tab.Document;
+            _logLines = tab.LogLines;
+            _searchResults = tab.SearchResults;
+            _searchResultLineNumbers = tab.SearchResultLineNumbers;
+            _searchResultsByLineNumber = tab.SearchResultsByLineNumber;
+            _highlightedLineNumber = tab.HighlightedLineNumber;
+            _currentOffset = tab.CurrentOffset;
+            _currentLineNumber = tab.CurrentLineNumber;
+            _nextOffset = tab.NextOffset;
+            _searchTopIndex = tab.SearchTopIndex;
+            _selectedSearchResultIndex = tab.SelectedSearchResultIndex;
+            _logMaxContentWidth = tab.LogMaxContentWidth;
+            _searchMaxContentWidth = tab.SearchMaxContentWidth;
+            _logReserveHScroll = tab.LogReserveHScroll;
+            _searchReserveHScroll = tab.SearchReserveHScroll;
+            _activeSearchCriteria = tab.ActiveSearchCriteria;
+            _isLiveRefreshEnabled = tab.IsLiveRefreshEnabled;
+            SearchTextBox.Text = tab.SearchText;
+            CaseSensitiveButton.IsChecked = tab.CaseSensitive;
+            RegexButton.IsChecked = tab.UseRegex;
+            LogContentBox.HorizontalScrollBarVisibility = _logReserveHScroll
+                ? ScrollBarVisibility.Visible
+                : ScrollBarVisibility.Auto;
+            SearchContentBox.HorizontalScrollBarVisibility = _searchReserveHScroll
+                ? ScrollBarVisibility.Visible
+                : ScrollBarVisibility.Auto;
+            SelectEncoding(_document?.EncodingKind ?? LogTextEncoding.Utf8);
+            RefreshLogTextBoxes();
+            RefreshSearchTextBoxes();
+            UpdateLineNumberColumnWidth();
+            SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(_searchResults.Count);
+            SearchStatusTextBlock.Text = string.IsNullOrEmpty(tab.SearchStatus) ? Loc.S.Ready : tab.SearchStatus;
+            SearchProgressBar.Visibility = Visibility.Collapsed;
+            ConfigureScrollBar();
+            UpdateDocumentStatus();
+        }
+
+        _isChangingTabSelection = true;
+        DocumentTabsListBox.SelectedItem = tab;
+        LiveRefreshButton.IsChecked = _isLiveRefreshEnabled;
+        _isChangingTabSelection = false;
+        if (_isLiveRefreshEnabled)
+        {
+            _liveRefreshTimer.Start();
+        }
+
+        UpdateLiveRefreshText();
+        UpdateControlState();
     }
 
     private async void RefreshButton_Click(object sender, RoutedEventArgs e)
@@ -234,12 +501,22 @@ public sealed partial class MainWindow : Window
 
     private async void LiveRefreshButton_Checked(object sender, RoutedEventArgs e)
     {
+        if (_isChangingTabSelection)
+        {
+            return;
+        }
+
         SetLiveRefreshEnabled(true);
         await RefreshLiveAsync();
     }
 
     private void LiveRefreshButton_Unchecked(object sender, RoutedEventArgs e)
     {
+        if (_isChangingTabSelection)
+        {
+            return;
+        }
+
         SetLiveRefreshEnabled(false);
     }
 
@@ -274,6 +551,12 @@ public sealed partial class MainWindow : Window
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (_isRestoringAfterInactivity)
+        {
+            e.Handled = true;
+            return;
+        }
+
         if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control && e.Key == Key.F)
         {
             e.Handled = true;
@@ -310,7 +593,7 @@ public sealed partial class MainWindow : Window
                 Header = Path.GetFileName(file),
                 ToolTip = file
             };
-            item.Click += async (_, _) => await OpenOrLaunchAsync(file);
+            item.Click += async (_, _) => await OpenOrSelectTabAsync(file);
             menu.Items.Add(item);
         }
 
@@ -337,6 +620,7 @@ public sealed partial class MainWindow : Window
             menu.Items.Add(item);
         }
 
+        menu.MaxHeight = Math.Max(32, SearchResultsRow.ActualHeight - 38);
         ShowButtonMenu(SearchHistoryButton, menu);
     }
 
@@ -697,6 +981,7 @@ public sealed partial class MainWindow : Window
         FontLabel.Text = s.FontLabel;
         FontSizeLabel.Text = s.FontSizeLabel;
         LanguageLabel.Text = s.LanguageLabel;
+        InactiveMemoryReleaseLabel.Text = s.InactiveMemoryReleaseLabel;
         FileAssocLabel.Text = s.FileAssocLabel;
         FileAssocHintLabel.Text = s.FileAssocHint;
         ApplyFileAssociationButton.Content = s.ApplyAssocButton;
@@ -726,16 +1011,19 @@ public sealed partial class MainWindow : Window
         CancelSearchButton.ToolTip = s.CancelButtonTip;
         ExportSearchButton.Content = s.ExportButton;
         ExportSearchButton.ToolTip = s.ExportButtonTip;
+        ReloadStatusTextBlock.Text = s.ReloadingAfterInactivity((int)Math.Floor(ReloadProgressBar.Value));
 
         LogCopyMenuItem.Header = s.MenuCopy;
         LogSelectAllMenuItem.Header = s.MenuSelectAll;
         SearchCopyMenuItem.Header = s.MenuCopy;
         SearchSelectAllMenuItem.Header = s.MenuSelectAll;
+        DocumentTabsListBox.Items.Refresh();
 
         UpdateThemeToggleText();
 
         if (_isSettingsInitialized)
         {
+            UpdateInactiveMemoryReleaseOptions();
             UpdateVersionText();
         }
 
@@ -797,6 +1085,7 @@ public sealed partial class MainWindow : Window
         }
 
         FontSizeComboBox.ItemsSource = sizes;
+        UpdateInactiveMemoryReleaseOptions();
 
         UpdateVersionText();
 
@@ -816,12 +1105,47 @@ public sealed partial class MainWindow : Window
             .OfType<string>()
             .FirstOrDefault(text => text == sizeText);
 
+        InactiveMemoryReleaseComboBox.SelectedValue = _settings.InactiveMemoryReleaseMinutes;
+
         _isUpdatingFontSettings = false;
 
         LanguageComboBox.SelectedIndex = Loc.Current == AppLanguage.English ? 1 : 0;
 
         AssociateLogCheckBox.IsChecked = _settings.FileAssociations.Contains(".log");
         AssociateTxtCheckBox.IsChecked = _settings.FileAssociations.Contains(".txt");
+    }
+
+    private void InactiveMemoryReleaseComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isUpdatingFontSettings || InactiveMemoryReleaseComboBox.SelectedValue is not int minutes)
+        {
+            return;
+        }
+
+        _settings.InactiveMemoryReleaseMinutes = minutes;
+        _inactiveMemoryReleaseTimer.Stop();
+        if (minutes > 0)
+        {
+            _inactiveMemoryReleaseTimer.Interval = TimeSpan.FromMinutes(minutes);
+        }
+
+        SaveSettings();
+    }
+
+    private void UpdateInactiveMemoryReleaseOptions()
+    {
+        _isUpdatingFontSettings = true;
+        InactiveMemoryReleaseComboBox.ItemsSource = new[]
+        {
+            new KeyValuePair<int, string>(1, "1"),
+            new KeyValuePair<int, string>(5, "5"),
+            new KeyValuePair<int, string>(10, "10"),
+            new KeyValuePair<int, string>(30, "30"),
+            new KeyValuePair<int, string>(60, "60"),
+            new KeyValuePair<int, string>(0, Loc.S.Never)
+        };
+        InactiveMemoryReleaseComboBox.SelectedValue = _settings.InactiveMemoryReleaseMinutes;
+        _isUpdatingFontSettings = false;
     }
 
     private void FontFamilyComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -941,7 +1265,7 @@ public sealed partial class MainWindow : Window
         UpdateSearchResultsMaxHeight();
     }
 
-    // 限制搜索结果栏的最高高度，确保日志主区域至少保留 MinHeight，避免底部栏被挤出屏幕
+    // 限制搜索结果栏的最高高度，确保日志主区域至少保留一行。
     private void UpdateSearchResultsMaxHeight()
     {
         if (RootGrid.ActualHeight <= 0)
@@ -950,7 +1274,7 @@ public sealed partial class MainWindow : Window
         }
 
         var rows = RootGrid.RowDefinitions;
-        var reserved = rows[0].Height.Value + rows[2].Height.Value + rows[4].Height.Value + MainLogRow.MinHeight;
+        var reserved = rows[0].ActualHeight + rows[1].ActualHeight + rows[3].ActualHeight + rows[5].ActualHeight + MainLogRow.MinHeight;
         var max = RootGrid.ActualHeight - reserved;
         SearchResultsRow.MaxHeight = Math.Max(SearchResultsRow.MinHeight, max);
     }
@@ -1417,18 +1741,189 @@ public sealed partial class MainWindow : Window
         e.Handled = true;
     }
 
+    private void MainWindow_Deactivated(object? sender, EventArgs e)
+    {
+        if (_settings.InactiveMemoryReleaseMinutes > 0 && _tabs.Any(tab => tab.Document is not null))
+        {
+            _inactiveMemoryReleaseTimer.Stop();
+            _inactiveMemoryReleaseTimer.Start();
+        }
+    }
+
+    private async void MainWindow_Activated(object? sender, EventArgs e)
+    {
+        _inactiveMemoryReleaseTimer.Stop();
+        if (!_documentsReleasedForInactivity || _isOpening || _isRestoringAfterInactivity)
+        {
+            return;
+        }
+
+        var previousFocus = Keyboard.FocusedElement;
+        _isRestoringAfterInactivity = true;
+        ReloadProgressBar.Value = 0;
+        UpdateReloadProgress(0);
+        ReloadOverlay.Visibility = Visibility.Visible;
+        ReloadOverlay.Focus();
+        try
+        {
+            await RestoreDocumentsAfterInactivityAsync();
+        }
+        finally
+        {
+            ReloadOverlay.Visibility = Visibility.Collapsed;
+            _isRestoringAfterInactivity = false;
+            if (previousFocus is not null)
+            {
+                Keyboard.Focus(previousFocus);
+            }
+        }
+    }
+
+    private async void InactiveMemoryReleaseTimer_Tick(object? sender, EventArgs e)
+    {
+        _inactiveMemoryReleaseTimer.Stop();
+        await _openGate.WaitAsync();
+        try
+        {
+            CancelCurrentSearch();
+            while (_isOpening || _isSearching || _isRefreshingLive)
+            {
+                if (IsActive)
+                {
+                    return;
+                }
+
+                await Task.Delay(20);
+            }
+
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ContextIdle);
+            if (IsActive)
+            {
+                return;
+            }
+
+            SaveCurrentTabState();
+            _liveRefreshTimer.Stop();
+            var released = false;
+            foreach (var tab in _tabs)
+            {
+                released |= tab.Document is not null;
+                tab.ReleaseDocument();
+            }
+
+            if (!released)
+            {
+                return;
+            }
+
+            _document = null;
+            _documentsReleasedForInactivity = true;
+            ReleaseUnusedMemory();
+            UpdateMemoryStatus();
+        }
+        finally
+        {
+            _openGate.Release();
+        }
+    }
+
+    private async Task RestoreDocumentsAfterInactivityAsync()
+    {
+        await _openGate.WaitAsync();
+        try
+        {
+            if (!_documentsReleasedForInactivity)
+            {
+                return;
+            }
+
+            _isOpening = true;
+            UpdateControlState();
+            Exception? firstError = null;
+            var tabs = _tabs
+                .OrderBy(tab => ReferenceEquals(tab, _currentTab) ? 0 : 1)
+                .ToList();
+            var pendingTabs = tabs.Where(tab => tab.Document is null).ToList();
+            var fileSizes = pendingTabs.ToDictionary(tab => tab, tab => GetFileSizeOrZero(tab.FilePath));
+            var totalBytes = fileSizes.Values.Sum(static bytes => (double)bytes);
+            var completedBytes = 0d;
+
+            foreach (var tab in pendingTabs)
+            {
+                var completedBefore = completedBytes;
+                var expectedBytes = fileSizes[tab];
+                var progress = new Progress<(long BytesRead, long TotalBytes)>(value =>
+                {
+                    var currentBytes = Math.Clamp(value.BytesRead, 0, expectedBytes);
+                    UpdateReloadProgress(totalBytes <= 0
+                        ? 0
+                        : (completedBefore + currentBytes) * 100 / totalBytes);
+                });
+
+                try
+                {
+                    var document = await Task.Run(() => LogFileDocument.Open(tab.FilePath, tab.EncodingKind, progress));
+                    tab.RestoreDocument(document);
+                    if (ReferenceEquals(tab, _currentTab))
+                    {
+                        _document = document;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    firstError ??= ex;
+                }
+
+                completedBytes += expectedBytes;
+                UpdateReloadProgress(totalBytes <= 0 ? 0 : completedBytes * 100 / totalBytes);
+            }
+
+            UpdateReloadProgress(100);
+
+            _documentsReleasedForInactivity = _tabs.Any(tab => tab.Document is null);
+            if (_isLiveRefreshEnabled && _document is not null)
+            {
+                _liveRefreshTimer.Start();
+            }
+
+            UpdateMemoryStatus();
+            if (firstError is not null)
+            {
+                await ShowErrorAsync(Loc.S.OpenFailedTitle, DescribeException(firstError));
+            }
+        }
+        finally
+        {
+            _isOpening = false;
+            UpdateControlState();
+            _openGate.Release();
+        }
+    }
+
     private void MainWindow_Closed(object? sender, EventArgs args)
     {
         _memoryStatusTimer.Stop();
+        _inactiveMemoryReleaseTimer.Stop();
         _liveRefreshTimer.Stop();
         _searchCts?.Cancel();
         _searchCts?.Dispose();
-        _document?.Dispose();
+        SaveCurrentTabState();
+        foreach (var tab in _tabs)
+        {
+            tab.Dispose();
+        }
+
+        _document = null;
     }
 
     private void SetLiveRefreshEnabled(bool enabled)
     {
         _isLiveRefreshEnabled = enabled && _document is not null;
+        if (_currentTab is not null)
+        {
+            _currentTab.IsLiveRefreshEnabled = _isLiveRefreshEnabled;
+        }
+
         if (_isLiveRefreshEnabled)
         {
             _liveRefreshTimer.Start();
@@ -1630,12 +2125,26 @@ public sealed partial class MainWindow : Window
         SearchProgressBar.Visibility = Visibility.Collapsed;
         UpdateControlState();
 
+        var previousFocus = Keyboard.FocusedElement;
+        ReloadProgressBar.Value = 0;
+        UpdateReloadProgress(0);
+        ReloadOverlay.Visibility = Visibility.Visible;
+        ReloadOverlay.Focus();
+        var progress = new Progress<(long BytesRead, long TotalBytes)>(value =>
+            UpdateReloadProgress(value.TotalBytes <= 0
+                ? 0
+                : value.BytesRead * 100.0 / value.TotalBytes));
+
         try
         {
             var oldDocument = _document;
             _document = null;
+            if (_currentTab is not null)
+            {
+                _currentTab.Document = null;
+            }
+
             oldDocument?.Dispose();
-            oldDocument = null;
             _highlightedLineNumber = null;
             _logLines.Clear();
             ClearSearchResults();
@@ -1645,13 +2154,21 @@ public sealed partial class MainWindow : Window
             RefreshLogTextBoxes();
             ClearSearchTextBoxes();
             ConfigureScrollBar();
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
+            if (oldDocument is not null)
+            {
+                ReleaseUnusedMemory();
+            }
 
             var stopwatch = Stopwatch.StartNew();
-            var newDocument = await Task.Run(() => LogFileDocument.Open(filePath, encodingOverride));
+            var newDocument = await Task.Run(() => LogFileDocument.Open(filePath, encodingOverride, progress));
             stopwatch.Stop();
+            UpdateReloadProgress(100);
             _document = newDocument;
+            if (_currentTab is not null)
+            {
+                _currentTab.Document = newDocument;
+            }
+
             SaveRecentFile(filePath);
 
             SelectEncoding(newDocument.EncodingKind);
@@ -1675,6 +2192,12 @@ public sealed partial class MainWindow : Window
         }
         finally
         {
+            ReloadOverlay.Visibility = Visibility.Collapsed;
+            if (previousFocus is not null)
+            {
+                Keyboard.Focus(previousFocus);
+            }
+
             _isOpening = false;
             UpdateControlState();
         }
@@ -1761,7 +2284,14 @@ public sealed partial class MainWindow : Window
         SearchStatusTextBlock.Text = Loc.S.Searching;
         UpdateControlState();
 
-        var progress = new Progress<LogSearchProgress>(UpdateSearchProgress);
+        var searchTab = _currentTab;
+        var progress = new Progress<LogSearchProgress>(value =>
+        {
+            if (ReferenceEquals(searchTab, _currentTab))
+            {
+                UpdateSearchProgress(value);
+            }
+        });
         var stopwatch = Stopwatch.StartNew();
 
         try
@@ -1832,21 +2362,35 @@ public sealed partial class MainWindow : Window
 
     private void AddSearchResultBatchCore(IReadOnlyList<LogSearchResult> batch, bool followWhenAtEnd)
     {
+        var targetTab = _currentTab;
+        if (targetTab is null)
+        {
+            return;
+        }
+
         _ = Dispatcher.InvokeAsync(() =>
         {
-            var wasAtEnd = _searchResults.Count == 0 ||
-                           _searchTopIndex >= Math.Max(0, _searchResults.Count - _searchPageLineCount);
+            if (!_tabs.Contains(targetTab))
+            {
+                return;
+            }
+
+            var isActive = ReferenceEquals(targetTab, _currentTab);
+            var searchTopIndex = isActive ? _searchTopIndex : targetTab.SearchTopIndex;
+            var searchResults = targetTab.SearchResults;
+            var wasAtEnd = searchResults.Count == 0 ||
+                           searchTopIndex >= Math.Max(0, searchResults.Count - _searchPageLineCount);
             var added = new List<LogSearchResult>(batch.Count);
             var refreshedExisting = false;
 
             foreach (var result in batch)
             {
-                if (_searchResultLineNumbers.Add(result.LineNumber))
+                if (targetTab.SearchResultLineNumbers.Add(result.LineNumber))
                 {
-                    _searchResultsByLineNumber[result.LineNumber] = result;
+                    targetTab.SearchResultsByLineNumber[result.LineNumber] = result;
                     added.Add(result);
                 }
-                else if (_searchResultsByLineNumber.TryGetValue(result.LineNumber, out var existing))
+                else if (targetTab.SearchResultsByLineNumber.TryGetValue(result.LineNumber, out var existing))
                 {
                     existing.InvalidateText();
                     refreshedExisting = true;
@@ -1855,19 +2399,21 @@ public sealed partial class MainWindow : Window
 
             if (added.Count > 0)
             {
-                _searchResults.AddRange(added);
+                searchResults.AddRange(added);
                 if (followWhenAtEnd && wasAtEnd)
                 {
-                    _searchTopIndex = Math.Max(0, _searchResults.Count - _searchPageLineCount);
+                    searchTopIndex = Math.Max(0, searchResults.Count - _searchPageLineCount);
+                    targetTab.SearchTopIndex = searchTopIndex;
                 }
             }
 
-            if (added.Count > 0 || refreshedExisting)
+            if ((added.Count > 0 || refreshedExisting) && isActive)
             {
+                _searchTopIndex = searchTopIndex;
                 RefreshSearchTextBoxes();
                 UpdateSearchScrollAvailability();
                 UpdateSearchScrollThumb();
-                SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(_searchResults.Count);
+                SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(searchResults.Count);
                 UpdateControlState();
             }
         }, DispatcherPriority.Background);
@@ -1994,6 +2540,19 @@ public sealed partial class MainWindow : Window
         SearchStatusTextBlock.Text = Loc.S.SearchingCount(progress.MatchCount);
     }
 
+    private void UpdateReloadProgress(double percent)
+    {
+        percent = Math.Clamp(percent, 0, 100);
+        Debug.Assert(double.IsFinite(percent));
+        if (percent < ReloadProgressBar.Value)
+        {
+            return;
+        }
+
+        ReloadProgressBar.Value = percent;
+        ReloadStatusTextBlock.Text = Loc.S.ReloadingAfterInactivity((int)Math.Floor(percent));
+    }
+
     private void CancelCurrentSearch()
     {
         _searchCts?.Cancel();
@@ -2032,9 +2591,10 @@ public sealed partial class MainWindow : Window
     private void UpdateMemoryStatus()
     {
         var available = LogFileDocument.GetAvailablePhysicalMemory();
-        MemoryStatusTextBlock.Text = _document is null
-            ? Loc.S.MemoryIdle(FormatBytes(available), FormatBytes(LogFileDocument.MaxFileSize))
-            : Loc.S.MemoryActive(FormatBytes(available), FormatBytes(_document.MemoryUsage));
+        var memoryUsage = _tabs.Sum(tab => tab.Document?.MemoryUsage ?? 0);
+        MemoryStatusTextBlock.Text = _tabs.Count == 0
+            ? Loc.S.MemoryIdle(FormatBytes(available), FormatBytes(LogFileDocument.CurrentOpenLimit))
+            : Loc.S.MemoryActive(FormatBytes(available), FormatBytes(memoryUsage));
     }
 
     private void ResetStatus()
@@ -2081,6 +2641,7 @@ public sealed partial class MainWindow : Window
         PreviousResultButton.IsEnabled = _searchResults.Count > 0 && !_isOpening && !_isRefreshingLive;
         NextResultButton.IsEnabled = _searchResults.Count > 0 && !_isOpening && !_isRefreshingLive;
         CancelSearchButton.IsEnabled = _isSearching;
+        DocumentTabsListBox.IsEnabled = canChangeDocument;
         UpdateLogScrollAvailability();
         UpdateLogScrollThumb();
     }
@@ -2109,7 +2670,7 @@ public sealed partial class MainWindow : Window
         var trackHeight = LogScrollTrack.ActualHeight;
         var thumbHeight = Math.Clamp(
             trackHeight * _pageLineCount / _document!.LineCount,
-            LogScrollThumb.MinHeight,
+            Math.Min(LogScrollThumb.MinHeight, trackHeight),
             trackHeight);
         var maxThumbTop = Math.Max(0, trackHeight - thumbHeight);
         var maxValue = Math.Max(1, _document.LineCount - _pageLineCount);
@@ -2298,7 +2859,7 @@ public sealed partial class MainWindow : Window
         var trackHeight = SearchScrollTrack.ActualHeight;
         var thumbHeight = Math.Clamp(
             trackHeight * _searchPageLineCount / _searchResults.Count,
-            SearchScrollThumb.MinHeight,
+            Math.Min(SearchScrollThumb.MinHeight, trackHeight),
             trackHeight);
         var maxThumbTop = Math.Max(0, trackHeight - thumbHeight);
         var maxValue = Math.Max(1, _searchResults.Count - _searchPageLineCount);
@@ -2337,6 +2898,15 @@ public sealed partial class MainWindow : Window
         Application.Current.Resources[brushKey] = new SolidColorBrush(color);
     }
 
+    private static void ReleaseUnusedMemory()
+    {
+        GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        using var process = Process.GetCurrentProcess();
+        var trimmed = EmptyWorkingSet(process.Handle);
+        Debug.Assert(trimmed);
+    }
+
     private Task ShowErrorAsync(string title, string message)
     {
         MessageBox.Show(this, message, title, MessageBoxButton.OK, MessageBoxImage.Error);
@@ -2346,9 +2916,25 @@ public sealed partial class MainWindow : Window
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
 
+    [DllImport("psapi.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EmptyWorkingSet(IntPtr process);
+
     private static string FormatEncoding(LogTextEncoding encoding)
     {
         return encoding == LogTextEncoding.Utf8 ? "UTF-8" : "GBK";
+    }
+
+    private static long GetFileSizeOrZero(string filePath)
+    {
+        try
+        {
+            return new FileInfo(filePath).Length;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     private static string FormatBytes(long bytes)
@@ -2527,7 +3113,22 @@ public sealed partial class MainWindow : Window
 
     public async Task OpenFileFromArgsAsync(string filePath)
     {
-        await OpenFileAsync(filePath, encodingOverride: null, startLineNumber: 1);
+        await OpenOrSelectTabAsync(filePath);
+    }
+
+    public async Task HandleExternalOpenAsync(string? filePath)
+    {
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = WindowState.Normal;
+        }
+
+        Show();
+        Activate();
+        if (!string.IsNullOrWhiteSpace(filePath) && File.Exists(filePath))
+        {
+            await OpenOrSelectTabAsync(filePath);
+        }
     }
 
     private static string DescribeException(Exception ex)
@@ -2536,7 +3137,7 @@ public sealed partial class MainWindow : Window
         {
             FileNotFoundException => Loc.S.DescribeFileNotFound,
             UnauthorizedAccessException => Loc.S.DescribeUnauthorized,
-            InvalidOperationException when ex.Message.Contains("available memory limit", StringComparison.OrdinalIgnoreCase) => Loc.S.DescribeMemoryLimit(FormatBytes(LogFileDocument.MaxFileSize)),
+            InvalidOperationException when ex.Message.Contains("available memory limit", StringComparison.OrdinalIgnoreCase) => Loc.S.DescribeMemoryLimit(FormatBytes(LogFileDocument.CurrentOpenLimit)),
             OutOfMemoryException => Loc.S.DescribeOutOfMemory,
             ArgumentException when ex.Message.Contains("pattern", StringComparison.OrdinalIgnoreCase) => Loc.S.DescribeEmptyPattern,
             _ => ex.Message
