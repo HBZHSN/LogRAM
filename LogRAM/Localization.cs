@@ -30,13 +30,16 @@ public sealed class LocalizedStrings
     public string EncodingTip => T("编码", "Encoding");
     public string RecentButton => T("最近", "Recent");
     public string RecentButtonTip => T("打开最近文件", "Open recent file");
+    public string CloseTabTip => T("关闭标签页", "Close tab");
     public string JumpLineButton => T("跳转", "Go");
     public string SettingsButton => T("设置", "Settings");
-    public string SettingsButtonTip => T("调整字体、字号与语言", "Adjust font, size and language");
+    public string SettingsButtonTip => T("调整字体、字号、语言与内存", "Adjust font, size, language and memory");
 
     public string FontLabel => T("字体", "Font");
     public string FontSizeLabel => T("字号", "Font size");
     public string LanguageLabel => T("语言", "Language");
+    public string InactiveMemoryReleaseLabel => T("失焦释放内存（分钟）", "Release memory when inactive (minutes)");
+    public string Never => T("永不", "Never");
 
     public string FileAssocLabel => T("文件类型绑定", "File associations");
     public string FileAssocHint => T(
@@ -86,6 +89,9 @@ public sealed class LocalizedStrings
     public string OpenDialogTitle => T("打开日志文件", "Open log file");
 
     public string Loading => T("加载中", "Loading");
+    public string ReloadingAfterInactivity(int percent) => _en
+        ? $"Reloading logs, please wait… {percent}%"
+        : $"正在重新加载日志，请稍候… {percent}%";
     public string Searching => T("搜索中", "Searching");
     public string Ready => T("就绪", "Ready");
     public string NoFileOpen => T("未打开文件", "No file opened");
@@ -154,8 +160,8 @@ public sealed class LocalizedStrings
         : $"LogRAM {extension} 日志文件";
 
     public string DescribeMemoryLimit(string max) => _en
-        ? $"The log file exceeds the available memory limit (80% of free memory at startup, about {max})."
-        : $"日志文件超过了可用内存上限（启动时剩余内存的 80%，约 {max}）。";
+        ? $"The log file exceeds the current available memory limit (about {max})."
+        : $"日志文件超过了当前可用内存上限（约 {max}）。";
 }
 
 public static class Loc

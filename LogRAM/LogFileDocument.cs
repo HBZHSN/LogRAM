@@ -14,6 +14,8 @@ public sealed class LogFileDocument : IDisposable
 {
     public static readonly long MaxFileSize = CalculateMaxFileSize();
 
+    public static long CurrentOpenLimit => Math.Min(MaxFileSize, CalculateMaxFileSize());
+
     private const double AvailableMemoryUsageRatio = 0.8;
 
     private const int ChunkBits = 26;
@@ -23,6 +25,7 @@ public sealed class LogFileDocument : IDisposable
     private const int AdvancedSubBlockSize = 256 * 1024;
     private const long ProgressBytes = 64L * 1024L * 1024L;
     private const long ParallelPlainSearchThreshold = 256L * 1024L * 1024L;
+    private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(2);
 
     private static readonly Vector<byte> VectorLowercaseA = new((byte)'a');
     private static readonly Vector<byte> VectorLowercaseZ = new((byte)'z');
@@ -70,6 +73,14 @@ public sealed class LogFileDocument : IDisposable
 
     public static LogFileDocument Open(string filePath, LogTextEncoding? encodingOverride)
     {
+        return Open(filePath, encodingOverride, progress: null);
+    }
+
+    internal static LogFileDocument Open(
+        string filePath,
+        LogTextEncoding? encodingOverride,
+        IProgress<(long BytesRead, long TotalBytes)>? progress)
+    {
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
         if (!File.Exists(filePath))
@@ -78,14 +89,14 @@ public sealed class LogFileDocument : IDisposable
         }
 
         var fileInfo = new FileInfo(filePath);
-        if (fileInfo.Length > MaxFileSize)
+        if (fileInfo.Length > CurrentOpenLimit)
         {
             throw new InvalidOperationException("The log file exceeds the available memory limit.");
         }
 
         var encodingKind = encodingOverride ?? LogTextEncoding.Utf8;
         var encoding = GetEncoding(encodingKind);
-        var chunks = LoadFileIntoMemory(filePath, fileInfo.Length, out var lineStarts);
+        var chunks = LoadFileIntoMemory(filePath, fileInfo.Length, out var lineStarts, progress);
 
         return new LogFileDocument(filePath, fileInfo.Length, encodingKind, encoding, chunks, lineStarts);
     }
@@ -360,7 +371,7 @@ public sealed class LogFileDocument : IDisposable
                 options |= RegexOptions.IgnoreCase;
             }
 
-            regex = new Regex(pattern, options);
+            regex = new Regex(pattern, options, RegexTimeout);
         }
         else
         {
@@ -430,6 +441,25 @@ public sealed class LogFileDocument : IDisposable
         Action<IReadOnlyList<LogSearchResult>> onBatch,
         CancellationToken cancellationToken)
     {
+        return SearchLinesAsync(
+            firstLineNumber,
+            lastLineNumber: null,
+            pattern,
+            useRegex,
+            caseSensitive,
+            onBatch,
+            cancellationToken);
+    }
+
+    public Task<LogSearchSummary> SearchLinesAsync(
+        long firstLineNumber,
+        long? lastLineNumber,
+        string pattern,
+        bool useRegex,
+        bool caseSensitive,
+        Action<IReadOnlyList<LogSearchResult>> onBatch,
+        CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(pattern))
         {
             throw new ArgumentException("Search pattern cannot be empty.", nameof(pattern));
@@ -447,7 +477,7 @@ public sealed class LogFileDocument : IDisposable
                 options |= RegexOptions.IgnoreCase;
             }
 
-            regex = new Regex(pattern, options);
+            regex = new Regex(pattern, options, RegexTimeout);
         }
         else
         {
@@ -458,6 +488,7 @@ public sealed class LogFileDocument : IDisposable
         return Task.Run(
             () => SearchLineRange(
                 firstLineNumber,
+                lastLineNumber,
                 pattern,
                 regex,
                 patternBytes,
@@ -504,6 +535,25 @@ public sealed class LogFileDocument : IDisposable
         Action<IReadOnlyList<LogSearchResult>> onBatch,
         CancellationToken cancellationToken)
     {
+        return AdvancedSearchLinesAsync(
+            firstLineNumber,
+            lastLineNumber: null,
+            includeTerms,
+            excludeTerms,
+            caseSensitive,
+            onBatch,
+            cancellationToken);
+    }
+
+    public Task<LogSearchSummary> AdvancedSearchLinesAsync(
+        long firstLineNumber,
+        long? lastLineNumber,
+        IReadOnlyList<string> includeTerms,
+        IReadOnlyList<string> excludeTerms,
+        bool caseSensitive,
+        Action<IReadOnlyList<LogSearchResult>> onBatch,
+        CancellationToken cancellationToken)
+    {
         var includes = BuildAdvancedPatterns(includeTerms, caseSensitive);
         var excludes = BuildAdvancedPatterns(excludeTerms, caseSensitive);
 
@@ -513,7 +563,7 @@ public sealed class LogFileDocument : IDisposable
         }
 
         return Task.Run(
-            () => SearchAdvancedLineRange(firstLineNumber, includes, excludes, caseSensitive, onBatch, cancellationToken),
+            () => SearchAdvancedLineRange(firstLineNumber, lastLineNumber, includes, excludes, caseSensitive, onBatch, cancellationToken),
             cancellationToken);
     }
 
@@ -589,6 +639,7 @@ public sealed class LogFileDocument : IDisposable
 
     private LogSearchSummary SearchLineRange(
         long firstLineNumber,
+        long? lastLineNumber,
         string pattern,
         Regex? regex,
         byte[]? patternBytes,
@@ -611,7 +662,11 @@ public sealed class LogFileDocument : IDisposable
         var batch = new List<LogSearchResult>(SearchBatchSize);
         var matchCount = 0L;
 
-        for (var lineIndex = firstIndex; lineIndex < _lineStarts.Count; lineIndex++)
+        var lastIndexExclusive = lastLineNumber.HasValue
+            ? (int)Math.Clamp(lastLineNumber.Value, firstIndex, _lineStarts.Count)
+            : _lineStarts.Count;
+
+        for (var lineIndex = firstIndex; lineIndex < lastIndexExclusive; lineIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -641,6 +696,7 @@ public sealed class LogFileDocument : IDisposable
 
     private LogSearchSummary SearchAdvancedLineRange(
         long firstLineNumber,
+        long? lastLineNumber,
         AdvancedPattern[] includes,
         AdvancedPattern[] excludes,
         bool caseSensitive,
@@ -661,7 +717,11 @@ public sealed class LogFileDocument : IDisposable
         var batch = new List<LogSearchResult>(SearchBatchSize);
         var matchCount = 0L;
 
-        for (var lineIndex = firstIndex; lineIndex < _lineStarts.Count; lineIndex++)
+        var lastIndexExclusive = lastLineNumber.HasValue
+            ? (int)Math.Clamp(lastLineNumber.Value, firstIndex, _lineStarts.Count)
+            : _lineStarts.Count;
+
+        for (var lineIndex = firstIndex; lineIndex < lastIndexExclusive; lineIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -1417,7 +1477,11 @@ public sealed class LogFileDocument : IDisposable
         return (int)Math.Min(nextOffset, chunkLength);
     }
 
-    private static List<byte[]> LoadFileIntoMemory(string filePath, long fileSize, out List<long> lineStarts)
+    private static List<byte[]> LoadFileIntoMemory(
+        string filePath,
+        long fileSize,
+        out List<long> lineStarts,
+        IProgress<(long BytesRead, long TotalBytes)>? progress)
     {
         lineStarts = new List<long>(EstimateLineIndexCapacity(fileSize)) { 0 };
 
@@ -1459,9 +1523,14 @@ public sealed class LogFileDocument : IDisposable
             }
 
             loaded += chunk.Length;
+            if (loaded < fileSize)
+            {
+                progress?.Report((loaded, fileSize));
+            }
         }
 
         lineStarts.TrimExcess();
+        progress?.Report((fileSize, fileSize));
         return chunks;
     }
 

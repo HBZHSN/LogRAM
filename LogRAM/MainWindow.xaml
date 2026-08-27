@@ -63,7 +63,8 @@
 
         <Grid.RowDefinitions>
             <RowDefinition Height="38" />
-            <RowDefinition x:Name="MainLogRow" Height="*" MinHeight="150" />
+            <RowDefinition Height="32" />
+            <RowDefinition x:Name="MainLogRow" Height="*" MinHeight="20" />
             <RowDefinition Height="6" />
             <RowDefinition x:Name="SearchResultsRow" Height="190" MinHeight="84" />
             <RowDefinition Height="24" />
@@ -184,6 +185,19 @@
                                 <ComboBoxItem Content="中文" />
                                 <ComboBoxItem Content="English" />
                             </ComboBox>
+                            <TextBlock x:Name="InactiveMemoryReleaseLabel"
+                                       Text="失焦释放内存（分钟）"
+                                       Foreground="{DynamicResource TextBrush}"
+                                       Margin="0,10,0,4" />
+                            <ComboBox x:Name="InactiveMemoryReleaseComboBox"
+                                      SelectedValuePath="Key"
+                                      SelectionChanged="InactiveMemoryReleaseComboBox_SelectionChanged">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Value}" />
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                            </ComboBox>
 
                             <Separator Margin="0,12,0,8"
                                        Background="{DynamicResource BorderBrush}" />
@@ -239,7 +253,75 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="1"
+        <ListBox x:Name="DocumentTabsListBox"
+                 Grid.Row="1"
+                 SelectionMode="Single"
+                 SelectionChanged="DocumentTabsListBox_SelectionChanged"
+                 Background="{DynamicResource PanelBackBrush}"
+                 BorderBrush="{DynamicResource StrongBorderBrush}"
+                 BorderThickness="0,0,0,1"
+                 Padding="5,2"
+                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                 ScrollViewer.VerticalScrollBarVisibility="Disabled">
+            <ListBox.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <StackPanel Orientation="Horizontal" />
+                </ItemsPanelTemplate>
+            </ListBox.ItemsPanel>
+            <ListBox.ItemContainerStyle>
+                <Style TargetType="{x:Type ListBoxItem}">
+                    <Setter Property="Padding" Value="0" />
+                    <Setter Property="Margin" Value="0,0,4,0" />
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                    <Setter Property="VerticalContentAlignment" Value="Stretch" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="{x:Type ListBoxItem}">
+                                <Border x:Name="TabBorder"
+                                        Background="{DynamicResource ControlBackBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}"
+                                        BorderThickness="1">
+                                    <ContentPresenter />
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="TabBorder" Property="Background" Value="{DynamicResource ControlHoverBackBrush}" />
+                                    </Trigger>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter TargetName="TabBorder" Property="Background" Value="{DynamicResource ControlPressedBackBrush}" />
+                                        <Setter TargetName="TabBorder" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </ListBox.ItemContainerStyle>
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <StackPanel Orientation="Horizontal" Height="26">
+                        <TextBlock Text="{Binding DisplayName}"
+                                   ToolTip="{Binding FilePath}"
+                                   MaxWidth="260"
+                                   Margin="9,0,6,0"
+                                   TextTrimming="CharacterEllipsis"
+                                   VerticalAlignment="Center" />
+                        <Button Width="22"
+                                Height="22"
+                                MinWidth="22"
+                                Margin="0,1,2,1"
+                                Padding="0"
+                                Content="×"
+                                Tag="{Binding}"
+                                ToolTip="{Binding CloseTip}"
+                                AutomationProperties.Name="{Binding CloseTip}"
+                                Click="CloseDocumentTabButton_Click" />
+                    </StackPanel>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+
+        <Border Grid.Row="2"
                 Background="{DynamicResource LogBackBrush}"
                 BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="0,0,0,1">
@@ -308,7 +390,7 @@
             </Grid>
         </Border>
 
-        <GridSplitter Grid.Row="2"
+        <GridSplitter Grid.Row="3"
                       Height="6"
                       HorizontalAlignment="Stretch"
                       VerticalAlignment="Stretch"
@@ -319,7 +401,7 @@
                       ResizeDirection="Rows"
                       ResizeBehavior="PreviousAndNext" />
 
-        <Border Grid.Row="3"
+        <Border Grid.Row="4"
                 Background="{DynamicResource LogBackBrush}"
                 BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="0,0,0,1">
@@ -473,6 +555,7 @@
                             </Grid.ColumnDefinitions>
                             <TextBox x:Name="SearchTextBox"
                                      Grid.Column="0"
+                                     Padding="3,3,7,3"
                                      VerticalAlignment="Center"
                                      KeyDown="SearchTextBox_KeyDown"
                                      ToolTip="搜索文本或正则" />
@@ -480,6 +563,8 @@
                                     Grid.Column="1"
                                     Width="28"
                                     Margin="4,0,0,0"
+                                    Padding="0"
+                                    FontSize="9"
                                     VerticalAlignment="Center"
                                     Click="SearchHistoryButton_Click"
                                     Content="▼"
@@ -574,7 +659,7 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="4" Background="{DynamicResource PanelAltBackBrush}">
+        <Border Grid.Row="5" Background="{DynamicResource PanelAltBackBrush}">
             <Grid Margin="8,2">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -621,5 +706,35 @@
                 </StackPanel>
             </Grid>
         </Border>
+
+        <Grid x:Name="ReloadOverlay"
+              Grid.RowSpan="6"
+              Panel.ZIndex="100"
+              Background="#B3000000"
+              Cursor="Wait"
+              Focusable="True"
+              Visibility="Collapsed">
+            <Border Width="360"
+                    Padding="24"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="{DynamicResource PanelBackBrush}"
+                    BorderBrush="{DynamicResource StrongBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="4">
+                <StackPanel>
+                    <TextBlock x:Name="ReloadStatusTextBlock"
+                               Text="正在重新加载日志，请稍候… 0%"
+                               Foreground="{DynamicResource TextBrush}"
+                               FontSize="14"
+                               TextAlignment="Center" />
+                    <ProgressBar x:Name="ReloadProgressBar"
+                                 Height="8"
+                                 Margin="0,16,0,0"
+                                 Minimum="0"
+                                 Maximum="100" />
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Window>

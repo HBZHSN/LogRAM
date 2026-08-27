@@ -17,6 +17,8 @@ public sealed class AppSettings
 
     public string Language { get; set; } = "zh";
 
+    public int InactiveMemoryReleaseMinutes { get; set; } = 5;
+
     public List<string> FileAssociations { get; set; } = new() { ".log" };
 
     public List<string> RecentFiles { get; set; } = new();
@@ -79,6 +81,8 @@ public sealed class AppSettings
 
         Language = string.Equals(Language, "en", StringComparison.OrdinalIgnoreCase) ? "en" : "zh";
 
+        InactiveMemoryReleaseMinutes = NormalizeInactiveMemoryReleaseMinutes(InactiveMemoryReleaseMinutes);
+
         FileAssociations ??= new();
         FileAssociations = FileAssociations
             .Select(ext => ext.StartsWith('.') ? ext.ToLowerInvariant() : $".{ext.ToLowerInvariant()}")
@@ -90,6 +94,9 @@ public sealed class AppSettings
 
         return this;
     }
+
+    internal static int NormalizeInactiveMemoryReleaseMinutes(int minutes) =>
+        minutes is 0 or 1 or 5 or 10 or 30 or 60 ? minutes : 5;
 
     private static List<string> NormalizeList(List<string>? items, StringComparer comparer)
     {
