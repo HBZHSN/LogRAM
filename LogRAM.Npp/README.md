@@ -2,6 +2,10 @@
 
 只读大日志查看插件，复用 LogRAM 的内存、字节级 SIMD、多核搜索引擎。
 
+当前发布版本：**1.3.4**。[下载发行包](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.3.4) · [项目首页](../README.md) · [验证记录](VALIDATION.md)
+
+需要 Notepad++ **8.9.8.1 或更高版本**。提供 x64 / x86 自包含包；数 GB 日志建议使用 x64。已提交 [官方插件列表 PR #1220](https://github.com/notepad-plus-plus/nppPluginList/pull/1220)，审核并发布列表前可手动安装。
+
 ## 安装
 
 关闭 Notepad++，将发布包里的整个 `LogRAM.Npp` 文件夹复制到 NPP 的 `plugins` 目录：
