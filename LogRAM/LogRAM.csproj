@@ -15,7 +15,8 @@
 
   <ItemGroup>
     <Manifest Include="$(ApplicationManifest)" />
-    <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
+    <ProjectReference Include="../LogRAM.Core/LogRAM.Core.csproj" />
+    <Compile Remove="LogFileDocument.cs;LogQuery.cs;AdvancedSearchQuery.cs;LogLine.cs;LogPage.cs;LogSearchResult.cs;LogSearchProgress.cs;LogSearchSummary.cs;LogTextEncoding.cs" />
   </ItemGroup>
 
   <ItemGroup>

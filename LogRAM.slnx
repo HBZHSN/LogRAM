@@ -11,4 +11,6 @@
   </Project>
   <Project Path="LogRAM-cli/LogRAM-cli.csproj" />
   <Project Path="LogRAM-mcp/LogRAM-mcp.csproj" />
+  <Project Path="LogRAM.Core/LogRAM.Core.csproj" />
+  <Project Path="LogRAM.Npp.Viewer/LogRAM.Npp.Viewer.csproj" />
 </Solution>

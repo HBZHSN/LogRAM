@@ -30,6 +30,7 @@ LogRAM loads logs fully into memory and uses byte-level search, SIMD, multi-core
 - Recent files, search history, line-number navigation, and result context.
 - Dark and light themes, with Simplified Chinese and English interfaces.
 - GUI, native command-line tool, and stdio MCP server.
+- A read-only Notepad++ plugin that automatically loads `.log` files into its source/results workspace; see [plugin installation and build instructions](LogRAM.Npp/README.md).
 
 ## Requirements
 

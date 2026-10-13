@@ -30,6 +30,7 @@ LogRAM 将日志完整加载到内存，并使用字节级搜索、SIMD、多核
 - 提供最近文件、搜索历史、行号跳转和结果上下文。
 - 支持深色/浅色主题，以及简体中文/英文界面。
 - 提供 GUI、原生命令行工具和 stdio MCP 服务。
+- 提供 Notepad++ 只读日志插件，默认接管 `.log` 的加载并显示上下两栏工作区，复用同一搜索引擎。
 
 ## 系统要求
 
@@ -116,6 +117,13 @@ dotnet publish LogRAM-mcp/LogRAM-mcp.csproj -c Release -p:PublishProfile=win-x64
 ```
 
 ## 从源码构建
+
+Notepad++ 插件的功能、安装和构建见 [插件说明](LogRAM.Npp/README.md)。默认自包含 x64 发布包包含运行时：
+
+```powershell
+.\scripts\build-npp.ps1
+.\scripts\install-npp.ps1 -NotepadDirectory 'C:\Program Files\Notepad++'
+```
 
 需要 [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)。
 

@@ -1,0 +1,8 @@
+LIBRARY "LogRAM.Npp.dll"
+EXPORTS
+    setInfo
+    getName
+    getFuncsArray
+    beNotified
+    messageProc
+    isUnicode

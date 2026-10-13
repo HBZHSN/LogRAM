@@ -79,8 +79,10 @@ public sealed class LogFileDocument : IDisposable
     internal static LogFileDocument Open(
         string filePath,
         LogTextEncoding? encodingOverride,
-        IProgress<(long BytesRead, long TotalBytes)>? progress)
+        IProgress<(long BytesRead, long TotalBytes)>? progress,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
         if (!File.Exists(filePath))
@@ -96,7 +98,7 @@ public sealed class LogFileDocument : IDisposable
 
         var encodingKind = encodingOverride ?? LogTextEncoding.Utf8;
         var encoding = GetEncoding(encodingKind);
-        var chunks = LoadFileIntoMemory(filePath, fileInfo.Length, out var lineStarts, progress);
+        var chunks = LoadFileIntoMemory(filePath, fileInfo.Length, out var lineStarts, progress, cancellationToken);
 
         return new LogFileDocument(filePath, fileInfo.Length, encodingKind, encoding, chunks, lineStarts);
     }
@@ -1481,7 +1483,8 @@ public sealed class LogFileDocument : IDisposable
         string filePath,
         long fileSize,
         out List<long> lineStarts,
-        IProgress<(long BytesRead, long TotalBytes)>? progress)
+        IProgress<(long BytesRead, long TotalBytes)>? progress,
+        CancellationToken cancellationToken)
     {
         lineStarts = new List<long>(EstimateLineIndexCapacity(fileSize)) { 0 };
 
@@ -1499,6 +1502,7 @@ public sealed class LogFileDocument : IDisposable
 
         for (var chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var chunkLength = (int)Math.Min(ChunkSize, fileSize - loaded);
             var chunk = new byte[chunkLength];
             ReadExactly(stream, chunk);
@@ -1507,6 +1511,7 @@ public sealed class LogFileDocument : IDisposable
             var searchStart = 0;
             while (searchStart < chunk.Length)
             {
+                if ((lineStarts.Count & 0xFFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
                 var index = Array.IndexOf(chunk, (byte)'\n', searchStart);
                 if (index < 0)
                 {
