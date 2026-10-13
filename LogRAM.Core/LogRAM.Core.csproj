@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <Version>1.3.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../LogRAM/LogFileDocument.cs" Link="LogFileDocument.cs" />
+    <Compile Include="../LogRAM/LogQuery.cs" Link="LogQuery.cs" />
+    <Compile Include="../LogRAM/AdvancedSearchQuery.cs" Link="AdvancedSearchQuery.cs" />
+    <Compile Include="../LogRAM/LogLine.cs" Link="LogLine.cs" />
+    <Compile Include="../LogRAM/LogPage.cs" Link="LogPage.cs" />
+    <Compile Include="../LogRAM/LogSearchResult.cs" Link="LogSearchResult.cs" />
+    <Compile Include="../LogRAM/LogSearchProgress.cs" Link="LogSearchProgress.cs" />
+    <Compile Include="../LogRAM/LogSearchSummary.cs" Link="LogSearchSummary.cs" />
+    <Compile Include="../LogRAM/LogTextEncoding.cs" Link="LogTextEncoding.cs" />
+    <InternalsVisibleTo Include="LogRAM" />
+    <InternalsVisibleTo Include="LogRAM.Npp.Viewer" />
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
+  </ItemGroup>
+</Project>

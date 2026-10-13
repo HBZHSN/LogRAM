@@ -8,6 +8,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\LogRAM\LogRAM.csproj" />
+    <ProjectReference Include="..\LogRAM.Core\LogRAM.Core.csproj" />
   </ItemGroup>
 </Project>

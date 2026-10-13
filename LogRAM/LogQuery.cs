@@ -34,7 +34,8 @@ public static class LogQueryEngine
         LogFileDocument document,
         LogQuery query,
         Action<LogSearchResult> onMatch,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<LogSearchProgress>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(query);
@@ -59,12 +60,12 @@ public static class LogQueryEngine
 
         void AcceptBatch(IReadOnlyList<LogSearchResult> batch, bool coreHandledAnyAndExclude)
         {
+            var needsText = all.Length > 0 || (!coreHandledAnyAndExclude && (any.Length > 0 || excludes.Length > 0));
             foreach (var result in batch)
             {
-                var text = result.Text;
-                if ((!coreHandledAnyAndExclude && any.Length > 0 && !any.Any(term => text.Contains(term, comparison))) ||
-                    all.Any(term => !text.Contains(term, comparison)) ||
-                    (!coreHandledAnyAndExclude && excludes.Any(term => text.Contains(term, comparison))))
+                if (needsText && ((!coreHandledAnyAndExclude && any.Length > 0 && !any.Any(term => result.Text.Contains(term, comparison))) ||
+                    all.Any(term => !result.Text.Contains(term, comparison)) ||
+                    (!coreHandledAnyAndExclude && excludes.Any(term => result.Text.Contains(term, comparison)))))
                 {
                     continue;
                 }
@@ -80,7 +81,7 @@ public static class LogQueryEngine
             void OnBatch(IReadOnlyList<LogSearchResult> batch) => AcceptBatch(batch, coreHandledAnyAndExclude: false);
             if (fullFile)
             {
-                await document.SearchAsync(pattern, query.UseRegex, query.CaseSensitive, OnBatch, null, cancellationToken);
+                await document.SearchAsync(pattern, query.UseRegex, query.CaseSensitive, OnBatch, progress, cancellationToken);
             }
             else
             {
@@ -94,7 +95,7 @@ public static class LogQueryEngine
                 void OnBatch(IReadOnlyList<LogSearchResult> batch) => AcceptBatch(batch, coreHandledAnyAndExclude: true);
                 if (fullFile)
                 {
-                    await document.AdvancedSearchAsync(any, excludes, query.CaseSensitive, OnBatch, null, cancellationToken);
+                    await document.AdvancedSearchAsync(any, excludes, query.CaseSensitive, OnBatch, progress, cancellationToken);
                 }
                 else
                 {
@@ -113,7 +114,7 @@ public static class LogQueryEngine
                 void OnBatch(IReadOnlyList<LogSearchResult> batch) => AcceptBatch(batch, coreHandledAnyAndExclude: false);
                 if (fullFile)
                 {
-                    await document.SearchAsync(fallbackPattern, fallbackRegex, query.CaseSensitive, OnBatch, null, cancellationToken);
+                    await document.SearchAsync(fallbackPattern, fallbackRegex, query.CaseSensitive, OnBatch, progress, cancellationToken);
                 }
                 else
                 {
@@ -127,7 +128,7 @@ public static class LogQueryEngine
             var anchor = all.MaxBy(term => term.Length)!;
             if (fullFile)
             {
-                await document.SearchAsync(anchor, useRegex: false, query.CaseSensitive, OnBatch, null, cancellationToken);
+                await document.SearchAsync(anchor, useRegex: false, query.CaseSensitive, OnBatch, progress, cancellationToken);
             }
             else
             {
