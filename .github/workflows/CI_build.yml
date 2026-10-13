@@ -1,0 +1,53 @@
+name: CI_build
+
+on: [push, pull_request]
+
+jobs:
+  build:
+
+    runs-on: windows-latest
+    env:
+      Projectname: LogRAM
+    strategy:
+      fail-fast: false
+      matrix:
+        build_platform: [x64, x86, arm64]
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v7
+
+    - name: Add msbuild to PATH
+      uses: microsoft/setup-msbuild@v3
+
+    - name: MSBuild for nuget package restore
+      working-directory: .\
+      run: |
+           msbuild ${{ env.Projectname }}.slnx -restore
+
+    - name: MSBuild of plugin dll Debug
+      working-directory: .\
+      run: |
+           msbuild ${{ env.Projectname }}.slnx /m /p:configuration=Debug /p:platform="${{ matrix.build_platform }}"
+
+    - name: MSBuild of plugin dll Release
+      working-directory: .\
+      run: |
+           msbuild ${{ env.Projectname }}.slnx /m /p:configuration=Release /p:platform="${{ matrix.build_platform }}"
+
+    - name: Build via script N++ package
+      working-directory: .\scripts
+      run: |
+           ./build-npp.ps1 ${{ matrix.build_platform }}
+
+    - name: Archive artifacts for Release ${{ matrix.build_platform }}
+      uses: actions/upload-artifact@v7
+      with:
+        path: ./LogRAM.Npp/bin/package-${{ matrix.build_platform }}\LogRAM.Npp-**-${{ matrix.build_platform }}-plugin-admin.zip
+        archive: false
+
+    - name: Create release on tagging
+      uses: softprops/action-gh-release@v3
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: LogRAM.Npp-**-${{ matrix.build_platform }}-plugin-admin.zip

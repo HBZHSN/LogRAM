@@ -17,14 +17,16 @@ if ($Architecture -eq 'x64' -and (Get-Command g++ -ErrorAction SilentlyContinue)
     $platform = @{ x64 = 'x64'; x86 = 'Win32'; arm64 = 'ARM64' }[$Architecture]
     # Visual Studio CMake generators reject # in output paths (this repository can live under c#).
     $build = Join-Path $env:LOCALAPPDATA "LogRAM\build\npp-$Architecture-msvc"
-    & cmake -S (Join-Path $repo 'LogRAM.Npp') -B $build -G 'Visual Studio 17 2022' -A $platform
+    & cmake -S (Join-Path $repo 'LogRAM.Npp') -B $build -G 'Visual Studio 18 2026' -A $platform
 }
 if ($LASTEXITCODE) { throw 'Native plugin configuration failed.' }
 & cmake --build $build --config Release
 if ($LASTEXITCODE) { throw 'Native plugin build failed.' }
 $routerTest = Join-Path $build 'LogRAMNppRouterTest.exe'
 if (!(Test-Path -LiteralPath $routerTest)) { $routerTest = Join-Path $build 'Release\LogRAMNppRouterTest.exe' }
+if ($Architecture -ne 'arm64'){
 & $routerTest
+}
 if ($LASTEXITCODE) { throw 'Native .log routing self-test failed.' }
 $nativeDll = Join-Path $build 'LogRAM.Npp.dll'
 if (!(Test-Path -LiteralPath $nativeDll)) { $nativeDll = Join-Path $build 'Release\LogRAM.Npp.dll' }
@@ -36,8 +38,10 @@ Copy-Item -LiteralPath (Join-Path $repo 'LogRAM.Npp\VALIDATION.md') -Destination
 if (Test-Path -LiteralPath (Join-Path $repo 'LICENSE')) { Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination $package }
 Copy-Item -LiteralPath (Join-Path $repo 'LogRAM.Npp\licenses') -Destination $package -Recurse -Force
 foreach ($check in @('--self-test', '--ui-self-test')) {
-    $test = Start-Process -FilePath (Join-Path $package 'LogRAM.Npp.Viewer.exe') -ArgumentList $check -WindowStyle Hidden -Wait -PassThru
-    if ($test.ExitCode) { throw "Plugin self-test failed: $check" }
+    if ($Architecture -ne 'arm64'){
+        $test = Start-Process -FilePath (Join-Path $package 'LogRAM.Npp.Viewer.exe') -ArgumentList $check -WindowStyle Hidden -Wait -PassThru
+        if ($test.ExitCode) { throw "Plugin self-test failed: $check" }
+    }
 }
 $zip = Join-Path (Split-Path -Parent $package) "LogRAM.Npp-$version-$Architecture$variant.zip"
 Compress-Archive -LiteralPath $package -DestinationPath $zip -Force
