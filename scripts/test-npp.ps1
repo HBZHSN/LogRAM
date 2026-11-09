@@ -1,4 +1,4 @@
-﻿param([Parameter(Mandatory)] [string]$NotepadDirectory, [string]$LargeLog, [long]$ExpectedLines = 0, [long]$ExpectedMatches = -1, [switch]$Dark, [switch]$AutoLog)
+param([Parameter(Mandatory)] [string]$NotepadDirectory, [string]$LargeLog, [long]$ExpectedLines = 0, [long]$ExpectedMatches = -1, [switch]$Dark, [switch]$AutoLog)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $evidence = Join-Path $repo 'LogRAM.Npp\bin\integration\evidence'
@@ -163,7 +163,8 @@ try {
     Wait-Until { [NppTestNative]::SendMessage($originalEditor, 2006, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64() -eq ($originalLength + $note.Length) } 'unsaved editor fixture'
     $menu = [NppTestNative]::GetMenu($hostWindow)
     $openCurrent = [NppTestNative]::MenuCommand($menu, 'Open current saved file')
-    if (!$openCurrent) { throw 'The LogRAM plugin menu is missing.' }
+    $openSsh = [NppTestNative]::MenuCommand($menu, 'Open SSH log...')
+    if (!$openCurrent -or !$openSsh) { throw 'The LogRAM plugin menu is missing.' }
     if (!$AutoLog) { [void][NppTestNative]::SendMessage($hostWindow, 0x111, [IntPtr]$openCurrent, [IntPtr]::Zero) }
     Wait-Until { [NppTestNative]::ChildNamed($hostWindow, 'LogRAM') -ne [IntPtr]::Zero } 'embedded viewer'
     $viewer = [NppTestNative]::ChildNamed($hostWindow, 'LogRAM')
@@ -230,7 +231,7 @@ try {
     $resultsRect = (Find-Element '搜索结果列表').Current.BoundingRectangle
     $queryRect = (Find-Element '搜索条件' ([System.Windows.Automation.ControlType]::Edit)).Current.BoundingRectangle
     if ($queryRect.Top -le $sourceRect.Top -or $queryRect.Bottom -gt $resultsRect.Top) { throw 'Search controls are not above the lower result pane.' }
-    foreach ($name in @('刷新', '实时', '跳转行号', '跳转', '上一结果', '下一结果')) {
+    foreach ($name in @('刷新', '实时', 'SSH', '跳转行号', '跳转', '上一结果', '下一结果')) {
         $rect = (Find-Element $name).Current.BoundingRectangle
         if ($rect.IsEmpty -or [Math]::Abs(($rect.Top + $rect.Height / 2) - ($queryRect.Top + $queryRect.Height / 2)) -gt 4) { throw "Control is not in the search row: $name" }
     }

@@ -15,14 +15,15 @@ struct ShortcutKey { bool ctrl, alt, shift; unsigned char key; };
 struct FuncItem { wchar_t name[64]; void (__cdecl *function)(); int command; bool checked; ShortcutKey* shortcut; };
 constexpr UINT NppMessage = WM_USER + 1000;
 constexpr UINT MenuCheck = NppMessage + 40, ConfigDirectory = NppMessage + 46, DarkMode = NppMessage + 107;
-constexpr UINT CurrentPath = WM_USER + 3001, ViewerReady = WM_APP + 1, HideViewer = WM_APP + 2, HostCommand = WM_APP + 3;
+constexpr UINT CurrentPath = WM_USER + 3001, ViewerReady = WM_APP + 1, HideViewer = WM_APP + 2, HostCommand = WM_APP + 3, OpenSshTab = WM_APP + 4;
 static HINSTANCE instance;
 static NppData npp{};
 static HWND panel{}, viewer{};
 static HANDLE input{}, process{}, job{};
 static std::wstring pendingPath;
+static std::vector<std::wstring> pendingSshTabs;
 static bool editorsHidden{}, mainWasVisible{}, secondWasVisible{};
-static FuncItem commands[7]{};
+static FuncItem commands[8]{};
 static ShortcutKey workspaceShortcut{true, true, false, 'L'};
 static bool nppReady{}, routerInstalled{};
 static UINT autoRouteMessage{};
@@ -30,6 +31,7 @@ static UINT_PTR routingGeneration{};
 static std::map<UINT_PTR, std::wstring> routedBuffers;
 static std::map<UINT_PTR, int> encodingCommands;
 static std::set<UINT_PTR> restoredDirtyBuffers;
+static void ActivateSshTab(const std::wstring& entry);
 
 static void Error(const wchar_t* message) { MessageBoxW(npp.npp, message, L"LogRAM", MB_OK | MB_ICONERROR); }
 
@@ -68,6 +70,7 @@ static void UpdateEncodingMenu() {
 static void Stop() {
     viewer = nullptr;
     pendingPath.clear();
+    pendingSshTabs.clear();
     if (input) { CloseHandle(input); input = nullptr; }
     if (job) { CloseHandle(job); job = nullptr; }
     if (process) {
@@ -129,7 +132,7 @@ static void ReturnToEditor() {
     if (IsWindowVisible(activeView)) SetFocus(activeView);
 }
 
-static INT_PTR CALLBACK PanelProc(HWND window, UINT message, WPARAM wparam, LPARAM) {
+static INT_PTR CALLBACK PanelProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
     case ViewerReady: {
         DWORD childPid{}, workerPid = process ? GetProcessId(process) : 0;
@@ -142,6 +145,22 @@ static INT_PTR CALLBACK PanelProc(HWND window, UINT message, WPARAM wparam, LPAR
         SendLanguage();
         Send(SendMessageW(npp.npp, DarkMode, 0, 0) ? L"theme\t1" : L"theme\t0");
         if (!pendingPath.empty()) { Send(pendingPath); pendingPath.clear(); }
+        return TRUE;
+    }
+    case WM_COPYDATA: {
+        DWORD childPid{}, workerPid = process ? GetProcessId(process) : 0;
+        GetWindowThreadProcessId(reinterpret_cast<HWND>(wparam), &childPid);
+        if (!workerPid || childPid != workerPid || !lparam) return FALSE;
+        const auto* data = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
+        if (data->dwData != 1 || !data->lpData || data->cbData < sizeof(wchar_t) || (data->cbData % sizeof(wchar_t)) != 0) return FALSE;
+        pendingSshTabs.emplace_back(static_cast<const wchar_t*>(data->lpData), data->cbData / sizeof(wchar_t));
+        PostMessageW(window, OpenSshTab, 0, 0);
+        return TRUE;
+    }
+    case OpenSshTab: {
+        auto entries = std::move(pendingSshTabs);
+        pendingSshTabs.clear();
+        for (const auto& entry : entries) ActivateSshTab(entry);
         return TRUE;
     }
     case WM_SIZE: ResizeViewer(); return TRUE;
@@ -241,15 +260,29 @@ static void ShowPanel() {
     if (Show()) Send(L"focus");
 }
 static void OpenLog() { PostMessageW(npp.npp, WM_COMMAND, 41002, 0); }
+static void OpenSshLog() {
+    ++routingGeneration;
+    const bool wasVisible = panel && IsWindowVisible(panel);
+    if (!Show()) return;
+    const std::wstring command = wasVisible ? L"openssh\t1" : L"openssh\t0";
+    if (viewer) Send(command); else pendingPath = command;
+}
 static void OpenCurrent() {
     ++routingGeneration;
-    wchar_t path[32768]{};
-    SendMessageW(npp.npp, CurrentPath, 32768, reinterpret_cast<LPARAM>(path));
-    if (!path[0] || GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) { Error(L"The current document must be saved before opening its on-disk content in LogRAM."); return; }
-    if (!Show()) return;
     const auto buffer = static_cast<UINT_PTR>(SendMessageW(npp.npp, NppMessage + 60, 0, 0));
+    const auto routed = routedBuffers.find(buffer);
+    std::wstring target;
+    if (routed != routedBuffers.end() && routed->second.rfind(L"ssh://", 0) == 0) {
+        target = routed->second;
+    } else {
+        wchar_t path[32768]{};
+        SendMessageW(npp.npp, CurrentPath, 32768, reinterpret_cast<LPARAM>(path));
+        if (!path[0] || GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) { Error(L"The current document must be saved before opening its on-disk content in LogRAM."); return; }
+        target = path;
+    }
+    if (!Show()) return;
     const auto encoding = encodingCommands.find(buffer);
-    const std::wstring command = std::wstring(encoding != encodingCommands.end() && encoding->second == 45061 ? L"open\tgbk\t" : L"open\tutf8\t") + path;
+    const std::wstring command = std::wstring(encoding != encodingCommands.end() && encoding->second == 45061 ? L"open\tgbk\t" : L"open\tutf8\t") + target;
     if (viewer) Send(command); else pendingPath = command;
     UpdateEncodingMenu();
 }
@@ -257,6 +290,8 @@ static void OpenCurrent() {
 static void RouteCurrentLog() {
     const auto buffer = static_cast<UINT_PTR>(SendMessageW(npp.npp, NppMessage + 60, 0, 0));
     if (restoredDirtyBuffers.find(buffer) != restoredDirtyBuffers.end()) { ReturnToEditor(); return; }
+    const auto routed = routedBuffers.find(buffer);
+    if (routed != routedBuffers.end() && routed->second.rfind(L"ssh://", 0) == 0) { OpenCurrent(); return; }
     wchar_t path[32768]{};
     SendMessageW(npp.npp, NppMessage + 58, buffer, reinterpret_cast<LPARAM>(path));
     if (!path[0] || !IsRoutedLog(path)) { if (panel && IsWindowVisible(panel)) ReturnToEditor(); return; }
@@ -275,7 +310,47 @@ static void RouteCurrentLog() {
     OpenCurrent();
 }
 
+static void ActivateSshTab(const std::wstring& entry) {
+    const auto tab = entry.find(L'\t');
+    if (tab == std::wstring::npos || entry.rfind(L"ssh://", 0) != 0) return;
+    const auto uri = entry.substr(0, tab);
+    const auto title = entry.substr(tab + 1);
+    for (const auto& [existingBuffer, existingPath] : routedBuffers) {
+        if (existingPath == uri) {
+            const auto pos = static_cast<int>(SendMessageW(npp.npp, NppMessage + 57, existingBuffer, 0));
+            if (pos != -1) SendMessageW(npp.npp, NppMessage + 28, static_cast<unsigned int>(pos) >> 30, pos & 0x3FFFFFFF);
+            RouteCurrentLog();
+            return;
+        }
+    }
+    auto buffer = static_cast<UINT_PTR>(SendMessageW(npp.npp, NppMessage + 60, 0, 0));
+    wchar_t currentPath[32768]{};
+    SendMessageW(npp.npp, NppMessage + 58, buffer, reinterpret_cast<LPARAM>(currentPath));
+    HWND editor = SendMessageW(npp.npp, NppMessage + 88, 0, 0) == 1 ? npp.secondView : npp.mainView;
+    const bool canReuse = routedBuffers.find(buffer) == routedBuffers.end() &&
+        restoredDirtyBuffers.find(buffer) == restoredDirtyBuffers.end() &&
+        GetFileAttributesW(currentPath) == INVALID_FILE_ATTRIBUTES &&
+        SendMessageW(editor, 2006, 0, 0) == 0 && SendMessageW(editor, 2159, 0, 0) == 0;
+    if (!canReuse) {
+        SendMessageW(npp.npp, WM_COMMAND, 41001, 0);
+        buffer = static_cast<UINT_PTR>(SendMessageW(npp.npp, NppMessage + 60, 0, 0));
+        editor = SendMessageW(npp.npp, NppMessage + 88, 0, 0) == 1 ? npp.secondView : npp.mainView;
+    }
+    if (!title.empty()) SendMessageW(npp.npp, NppMessage + 115, buffer, reinterpret_cast<LPARAM>(title.c_str()));
+    if (!SendMessageW(editor, 2140, 0, 0)) SendMessageW(npp.npp, NppMessage + 48, 0, 42028);
+    routedBuffers[buffer] = uri;
+    RouteCurrentLog();
+}
+
 static LRESULT CALLBACK HostProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR subclass, DWORD_PTR) {
+    if (message == WM_COMMAND && HIWORD(wparam) == 0 && (LOWORD(wparam) == 41006 || LOWORD(wparam) == 41008)) {
+        const auto buffer = static_cast<UINT_PTR>(SendMessageW(npp.npp, NppMessage + 60, 0, 0));
+        const auto routed = routedBuffers.find(buffer);
+        if (routed != routedBuffers.end() && routed->second.rfind(L"ssh://", 0) == 0) {
+            Error(L"LogRAM SSH logs are read-only remote views and cannot be saved from the placeholder tab.");
+            return 0;
+        }
+    }
     if (message == WM_COMMAND && HIWORD(wparam) == 0 && LOWORD(wparam) >= 45004 && LOWORD(wparam) <= 45068) {
         const auto buffer = static_cast<UINT_PTR>(SendMessageW(npp.npp, NppMessage + 60, 0, 0));
         if (routedBuffers.find(buffer) != routedBuffers.end()) {
@@ -301,9 +376,9 @@ static LRESULT CALLBACK HostProc(HWND window, UINT message, WPARAM wparam, LPARA
 static void CloseLogs() { if (input) Send(L"closeall"); }
 static void Restart() { Stop(); if (panel && !Start()) ReturnToEditor(); }
 static void About() {
-    MessageBoxW(npp.npp, L"LogRAM 1.3.4 — Notepad++ plugin\n\nRead-only large-log viewer and SIMD/multicore search.\n"
+    MessageBoxW(npp.npp, L"LogRAM 1.4.0 — Notepad++ plugin\n\nRead-only large-log viewer, SIMD/multicore search, and SSH remote Linux log browsing.\n"
         L".log files automatically open in LogRAM without loading their content into the NPP editor.\nThe current saved file command reads the disk file, not unsaved edits.\n\n"
-        L"Ctrl+F: Search   Ctrl+G: Go to line   F3 / Shift+F3: Results\nUTF-8 / GBK; in(error,warning);notin(retry)", L"LogRAM", MB_OK | MB_ICONINFORMATION);
+        L"Ctrl+F: Search   Ctrl+G: Go to line   F3 / Shift+F3: Results\nUTF-8 / GBK; in(error,warning);notin(retry); SSH remote logs", L"LogRAM", MB_OK | MB_ICONINFORMATION);
 }
 
 extern "C" __declspec(dllexport) void setInfo(NppData data) {
@@ -315,11 +390,11 @@ extern "C" __declspec(dllexport) void setInfo(NppData data) {
 extern "C" __declspec(dllexport) const wchar_t* getName() { return L"LogRAM"; }
 extern "C" __declspec(dllexport) BOOL isUnicode() { return TRUE; }
 extern "C" __declspec(dllexport) FuncItem* getFuncsArray(int* count) {
-    const wchar_t* names[] = {L"Toggle LogRAM workspace", L"Open log...", L"Open current saved file", L"Return to Notepad++", L"Close all logs / release memory", L"Restart LogRAM worker", L"About"};
-    void (__cdecl *functions[])() = {ShowPanel, OpenLog, OpenCurrent, ReturnToEditor, CloseLogs, Restart, About};
-    for (int i = 0; i < 7; ++i) { lstrcpynW(commands[i].name, names[i], 64); commands[i].function = functions[i]; }
+    const wchar_t* names[] = {L"Toggle LogRAM workspace", L"Open log...", L"Open SSH log...", L"Open current saved file", L"Return to Notepad++", L"Close all logs / release memory", L"Restart LogRAM worker", L"About"};
+    void (__cdecl *functions[])() = {ShowPanel, OpenLog, OpenSshLog, OpenCurrent, ReturnToEditor, CloseLogs, Restart, About};
+    for (int i = 0; i < 8; ++i) { lstrcpynW(commands[i].name, names[i], 64); commands[i].function = functions[i]; }
     commands[0].shortcut = &workspaceShortcut;
-    *count = 7; return commands;
+    *count = 8; return commands;
 }
 extern "C" __declspec(dllexport) void beNotified(void* notification) {
     const auto* header = static_cast<NMHDR*>(notification);

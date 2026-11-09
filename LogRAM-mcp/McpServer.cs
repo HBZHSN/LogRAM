@@ -174,7 +174,7 @@ internal sealed class McpServer : IDisposable
             {
                 name = "logram",
                 title = "LogRAM MCP",
-                version = typeof(McpServer).Assembly.GetName().Version?.ToString(3) ?? "1.3.0",
+                version = typeof(McpServer).Assembly.GetName().Version?.ToString(3) ?? "1.4.0",
                 description = "Fast in-memory search and bounded context reads for very large Windows log files."
             },
             instructions = "search_log and read_log cache each file in this MCP process. Prefer max_results <= 100 and narrow context; call close_log only when the file is no longer needed."

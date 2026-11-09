@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 
 namespace LogRAM;
 
-public sealed class LogFileDocument : IDisposable
+public sealed class LogFileDocument : ILogDocument
 {
     public static readonly long MaxFileSize = CalculateMaxFileSize();
 
@@ -60,6 +60,14 @@ public sealed class LogFileDocument : IDisposable
     public long LineCount => _lineStarts.Count;
 
     public long MemoryUsage => FileSize + (long)_lineStarts.Count * sizeof(long);
+
+    public Task<LogPage> ReadPageAsync(long startLineNumber, int maxLines, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(ReadLinesFromLine(startLineNumber, maxLines));
+    }
+
+    public Task<AppendResult> RefreshAsync() => Task.Run(AppendNewContent);
 
     public readonly record struct AppendResult(
         long OldFileSize,

@@ -12,6 +12,13 @@ public sealed class LogSearchResult
         _document = document;
     }
 
+    internal LogSearchResult(long lineNumber, long offset, string text)
+    {
+        LineNumber = lineNumber;
+        Offset = offset;
+        _text = text;
+    }
+
     public long LineNumber { get; }
 
     public long Offset { get; }
@@ -26,5 +33,11 @@ public sealed class LogSearchResult
     internal void InvalidateText()
     {
         _text = null;
+    }
+
+    internal void RefreshFrom(LogSearchResult result)
+    {
+        _document = result._document;
+        _text = result._text;
     }
 }

@@ -86,12 +86,17 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <Button x:Name="OpenButton"
-                        Grid.Column="0"
-                        Margin="0,0,6,0"
-                        Click="OpenButton_Click"
-                        Content="打开"
-                        ToolTip="打开日志文件" />
+                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                    <Button x:Name="OpenButton"
+                            Margin="0,0,6,0"
+                            Click="OpenButton_Click"
+                            Content="打开"
+                            ToolTip="打开日志文件" />
+                    <Button x:Name="SshButton"
+                            Margin="0,0,6,0"
+                            Click="SshButton_Click"
+                            Content="SSH" />
+                </StackPanel>
 
                 <Button x:Name="RecentButton"
                         Grid.Column="1"
@@ -124,8 +129,7 @@
                 </ComboBox>
 
 
-                <StackPanel Grid.Column="0"
-                            Grid.ColumnSpan="8"
+                <StackPanel Grid.Column="5"
                             Orientation="Horizontal"
                             HorizontalAlignment="Center"
                             VerticalAlignment="Center"
@@ -676,34 +680,36 @@
 
                 <TextBlock x:Name="MemoryStatusTextBlock"
                            Grid.Column="1"
+                           Margin="10,0"
                            HorizontalAlignment="Center"
                            Foreground="{DynamicResource MutedTextBrush}"
                            VerticalAlignment="Center" />
 
-                <StackPanel Grid.Column="2"
-                            Orientation="Horizontal"
-                            HorizontalAlignment="Right"
-                            VerticalAlignment="Center">
-                    <TextBlock x:Name="FileSizeTextBlock"
-                               Foreground="{DynamicResource MutedTextBrush}"
-                               VerticalAlignment="Center" />
-                    <TextBlock x:Name="EncodingStatusTextBlock"
-                               Margin="14,0,0,0"
-                               Foreground="{DynamicResource MutedTextBrush}"
-                               VerticalAlignment="Center" />
-                    <TextBlock x:Name="SearchStatusTextBlock"
-                               Margin="14,0,0,0"
-                               Foreground="{DynamicResource MutedTextBrush}"
-                               VerticalAlignment="Center" />
-                    <ProgressBar x:Name="SearchProgressBar"
-                                 Width="180"
-                                 Height="7"
-                                 Margin="14,0,0,0"
-                                 Minimum="0"
-                                 Maximum="100"
-                                 Visibility="Collapsed"
-                                 VerticalAlignment="Center" />
-                </StackPanel>
+                <Grid Grid.Column="2" ClipToBounds="True">
+                    <StackPanel Orientation="Horizontal"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Center">
+                        <TextBlock x:Name="FileSizeTextBlock"
+                                   Foreground="{DynamicResource MutedTextBrush}"
+                                   VerticalAlignment="Center" />
+                        <TextBlock x:Name="EncodingStatusTextBlock"
+                                   Margin="14,0,0,0"
+                                   Foreground="{DynamicResource MutedTextBrush}"
+                                   VerticalAlignment="Center" />
+                        <TextBlock x:Name="SearchStatusTextBlock"
+                                   Margin="14,0,0,0"
+                                   Foreground="{DynamicResource MutedTextBrush}"
+                                   VerticalAlignment="Center" />
+                        <ProgressBar x:Name="SearchProgressBar"
+                                     Width="180"
+                                     Height="7"
+                                     Margin="14,0,0,0"
+                                     Minimum="0"
+                                     Maximum="100"
+                                     Visibility="Collapsed"
+                                     VerticalAlignment="Center" />
+                    </StackPanel>
+                </Grid>
             </Grid>
         </Border>
 

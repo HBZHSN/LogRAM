@@ -21,6 +21,21 @@ public sealed class LocalizedStrings
 
     public string OpenButton => T("打开", "Open");
     public string OpenButtonTip => T("打开日志文件", "Open log file");
+    public string SshButtonTip => T("通过 SSH 在远程主机浏览和搜索日志", "Browse and search logs on a remote host over SSH");
+    public string SshOpen => T("打开远程日志", "Open remote log");
+    public string SshHost => T("SSH 主机", "SSH host");
+    public string SshBrowse => T("连接 / 浏览", "Connect / Browse");
+    public string SshParent => T("上级目录", "Parent directory");
+    public string SshHint => T(
+        "需要远程 Linux 安装 Python 3，以及 SSH 密钥或 ssh-agent 登录。首次连接请先在终端运行 ssh 主机名，核对主机指纹。日志仅在远程读取；搜索最多回传 1000 条 / 1 MiB，单行最多 16 KiB。",
+        "Requires Python 3 on Linux and SSH key or ssh-agent authentication. First run ssh HOST in a terminal to verify its host key. Logs stay remote; searches return up to 1,000 matches / 1 MiB, each line up to 16 KiB.");
+    public string SshDirectoryLimited => T("仅显示前 1000 项；可直接输入完整路径。", "Showing up to 1,000 entries; enter a full path to access other files.");
+    public string SshExportTip => T("导出已回传的搜索结果（受条数、传输量和单行长度上限约束）", "Export returned search results (subject to result, transfer and line length limits)");
+    public string SshInvalidHost => T("请输入有效的 SSH 主机名。", "Enter a valid SSH host.");
+    public string SshConnectionFailed(string error) => T("SSH 连接失败，请检查主机指纹、密钥/ssh-agent 和远程 Python 3。\n", "SSH connection failed. Check the host key, key/ssh-agent authentication and remote Python 3.\n") + error;
+    public string SshResultCount(long total, int returned) => _en
+        ? $"Shown: {returned:n0} / Matches: {total:n0}"
+        : $"已回传 {returned:n0} / 命中 {total:n0}";
     public string RefreshButton => T("刷新", "Refresh");
     public string RefreshButtonTip => T("重新读取当前文件", "Reload current file");
     public string LiveRefreshOff => T("实时", "Live");
@@ -146,6 +161,9 @@ public sealed class LocalizedStrings
     public string MemoryActive(string available, string used) => _en
         ? $"Free memory: {available} · In use: {used}"
         : $"剩余内存：{available} · 当前占用：{used}";
+    public string SshMemoryUnavailable(string host) => _en ? $"{host} · Memory unavailable" : $"{host} · 无法获取远程内存";
+    public string SshMemoryTip => T("显示当前远程主机的可用内存（受容器限额约束），以及此日志处理进程的实际物理内存占用；空闲时每 2 秒刷新。", "Available memory on the selected remote host (subject to container limits), and physical memory used by this log's worker; refreshed every 2 seconds while idle.");
+    public string LocalMemoryTip => T("显示本机可用物理内存，以及包含日志、索引和界面在内的整个客户端物理内存占用。", "Available physical memory on this computer, and the entire client's physical memory usage, including logs, indexes and UI.");
 
     public string DocStatus(string size, long lineCount, long currentLine) => _en
         ? $"{size}  {lineCount:n0} lines  at {currentLine:n0}"

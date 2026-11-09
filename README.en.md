@@ -12,7 +12,7 @@ A large-file log viewer and search tool for Windows.
 
 LogRAM loads logs fully into memory and uses byte-level search, SIMD, multi-core processing, and virtualized rendering to handle large files. It is designed for multi-gigabyte logs that ordinary text editors struggle to open. The standalone GUI, Notepad++ plugin, command-line tool, and MCP server share the same search engine.
 
-Latest release: [Notepad++ plugin 1.3.4](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.3.4). Standalone GUI, CLI, and MCP downloads are available in [release 1.3.0](https://github.com/HBZHSN/LogRAM/releases/tag/1.3.0).
+Latest releases: [LogRAM 1.4.0](https://github.com/HBZHSN/LogRAM/releases/tag/1.4.0) and [Notepad++ plugin 1.4.0](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.4.0).
 
 | Mode | Use case | Start here |
 | --- | --- | --- |
@@ -36,6 +36,7 @@ Latest release: [Notepad++ plugin 1.3.4](https://github.com/HBZHSN/LogRAM/releas
 - Stream and cancel search results, jump to the source line, and export results.
 - Refresh files manually or follow appended content in real time.
 - Read UTF-8 and GBK files.
+- Browse and search remote Linux logs over SSH in both the standalone GUI and the Notepad++ plugin; indexing, search, and live refresh run remotely without downloading full logs.
 - Recent files, search history, line-number navigation, and result context.
 - Dark and light themes, with Simplified Chinese and English interfaces.
 - GUI, command-line tool, and stdio MCP server.
@@ -52,22 +53,22 @@ Each open file is loaded fully into memory, so memory use accumulates across tab
 
 ## Installation and Downloads
 
-The current **Notepad++ plugin version is 1.3.4**. Its packages include the .NET 8 runtime:
+The current **Notepad++ plugin version is 1.4.0**. Its packages include the .NET 8 runtime:
 
 | File | Download | Installation |
 | --- | --- | --- |
-| `LogRAM.Npp-1.3.4-x64.zip` | [Download x64](https://github.com/HBZHSN/LogRAM/releases/download/npp-1.3.4/LogRAM.Npp-1.3.4-x64.zip) | Manual installation; recommended for multi-GB logs |
-| `LogRAM.Npp-1.3.4-x86.zip` | [Download x86](https://github.com/HBZHSN/LogRAM/releases/download/npp-1.3.4/LogRAM.Npp-1.3.4-x86.zip) | For 32-bit NPP |
-| `*-plugin-admin.zip` | [Release page](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.3.4) | Plugins Admin layout; for manual use, extract into `plugins/LogRAM.Npp/` |
+| `LogRAM.Npp-1.4.0-x64.zip` | [Download x64](https://github.com/HBZHSN/LogRAM/releases/download/npp-1.4.0/LogRAM.Npp-1.4.0-x64.zip) | Manual installation; recommended for multi-GB logs |
+| `LogRAM.Npp-1.4.0-x86.zip` | [Download x86](https://github.com/HBZHSN/LogRAM/releases/download/npp-1.4.0/LogRAM.Npp-1.4.0-x86.zip) | For 32-bit NPP |
+| `*-plugin-admin.zip` | [Release page](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.4.0) | Plugins Admin layout; for manual use, extract into `plugins/LogRAM.Npp/` |
 
-The current standalone GUI, CLI, and MCP release is **1.3.0**:
+The current standalone GUI, CLI, and MCP release is **1.4.0**:
 
 | File | Runtime | Recommended for |
 | --- | --- | --- |
-| [LogRAM-win-x64.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.3.0/LogRAM-win-x64.exe) | .NET runtime included | Most users; runs directly after download |
-| [LogRAM-win-x64-fd.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.3.0/LogRAM-win-x64-fd.exe) | Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) | A smaller download |
-| [LogRAM-cli.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.3.0/LogRAM-cli.exe) | Self-contained package | Terminal queries and batch processing |
-| [LogRAM-mcp.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.3.0/LogRAM-mcp.exe) | Self-contained package | stdio MCP integration |
+| [LogRAM-win-x64.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.4.0/LogRAM-win-x64.exe) | .NET runtime included | Most users; runs directly after download |
+| [LogRAM-win-x64-fd.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.4.0/LogRAM-win-x64-fd.exe) | Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) | A smaller download |
+| [LogRAM-cli.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.4.0/LogRAM-cli.exe) | Self-contained package | Terminal queries and batch processing |
+| [LogRAM-mcp.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.4.0/LogRAM-mcp.exe) | Self-contained package | stdio MCP integration |
 
 LogRAM is a portable single-file application and does not require installation.
 
@@ -84,7 +85,7 @@ Notepad++/plugins/LogRAM.Npp/
   ...supporting DLLs, runtime and license files
 ```
 
-The upper pane displays the source and context; the lower pane displays search results. Its toolbar groups search, search options, refresh/live, line navigation, and result navigation/export on one row. Hover over an icon for its description; `.*` and `Aa` control regex and case sensitivity.
+The upper pane displays the source and context; the lower pane displays search results. Its toolbar groups search, search options, refresh/live/SSH, line navigation, and result navigation/export on one row. Hover over an icon for its description; `.*`, `Aa`, and `SSH` control regex, case sensitivity, and remote SSH log opening (also available via **Plugins → LogRAM → Open SSH log...**).
 
 <div align="center">
 
@@ -127,6 +128,20 @@ Advanced search supports "include any" and "exclude any" terms, or the equivalen
 ```text
 in(error,warning);notin(retry,ignored)
 ```
+
+### Remote Logs over SSH
+
+The **SSH** button in the standalone GUI (or **SSH** / **Plugins → LogRAM → Open SSH log...** in the Notepad++ plugin) reads hosts from `%USERPROFILE%\.ssh\config` (including explicit aliases in `Include` files). Select a host, click **Connect / Browse**, and navigate to a log; alternatively, enter its full remote path. `~` refers to the remote user's home directory. The system `ssh.exe` honors the configured user, port, keys, ProxyJump and ProxyCommand.
+
+Once connected, the path box filters filenames as you type: `/var/log/a` lists entries in `/var/log/` whose names start with `a`. Results refresh after a 250 ms pause; superseded requests are cancelled and the input remains editable.
+
+Requires Python 3.7+ on the remote Linux host and key or ssh-agent authentication. First run `ssh HOST` in a terminal to verify the host key and prepare authentication. The GUI uses non-interactive authentication and does not prompt for passwords or key passphrases.
+
+The bundled read-only Python worker runs in remote memory over SSH, without a service installation, .NET, or additional ports. Logs and line indexes remain remote. Opening a file preflights its line count and longest line with fixed-size buffers before allocating its index. This requires two remote scans on first open. Paging reads only the requested lines, and live refresh indexes appended data. No full log is downloaded or cached locally. Remote and local logs share the existing tabs, UTF-8 / GBK controls, paging, line navigation, search, refresh and live mode. Use **Refresh** to reconnect after a disconnect; closing the tab releases its SSH session. Inactive memory release applies to local logs, while remote tabs keep their connections and indexes.
+
+Memory checks budget the index and search buffers against Linux available memory and remaining cgroup v1/v2 limits, leaving **20% of available memory or 64 MiB**, whichever is larger. Insufficient or unreadable memory statistics reject the operation with an explanation. Indexing, appended-data loading and searches also recheck their budgets; failure preserves the last valid index. The footer uses the same centered “Free memory · In use” format for local and remote tabs. Remote tabs show the selected host's available memory and that log worker's actual physical memory usage, refreshed every two seconds while idle; the tooltip identifies the host. Local tabs show local available memory and the entire client's physical memory usage. A disconnected worker is shown as unavailable rather than zero.
+
+Search reports the full match count but returns only the first **1,000 matches / approximately 1 MiB**, whichever limit is reached first. Individual lines are limited to **16 KiB** and marked when truncated. Export includes only returned content. Directory listings are limited to 1,000 entries; other files remain accessible by entering their full paths. Remote regex uses Python `re` syntax with a two-second per-line timeout; some extensions differ from the local .NET regex syntax.
 
 ## Command Line
 
@@ -200,10 +215,18 @@ dotnet publish LogRAM/LogRAM.csproj -c Release -p:PublishProfile=win-x64-fd
 dotnet publish LogRAM-mcp/LogRAM-mcp.csproj -c Release -p:PublishProfile=win-x64
 ```
 
+SSH self-checks (require local Python 3 for testing; protocol tests do not connect to production hosts):
+
+```powershell
+python scripts/test_ssh_agent.py
+dotnet run --project LogRAM-cli/LogRAM-cli.csproj -- --ssh-self-test
+.\LogRAM\bin\x64\Release\net8.0-windows\LogRAM.exe --ssh-ui-self-test .\LogRAM\bin\ssh-ui-test
+```
+
 ## Limitations
 
 - Windows only and read-only; LogRAM does not edit files.
-- Every file is loaded fully into memory.
+- Local files are loaded fully into memory; SSH logs are indexed on the remote host.
 - Only UTF-8 and GBK are currently supported.
 - The fast case-insensitive path is ASCII-only; non-ASCII text uses a slower decoded path.
 - Large files need an initial line-indexing pass when opened.

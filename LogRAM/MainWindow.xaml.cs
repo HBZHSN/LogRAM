@@ -49,12 +49,13 @@ public sealed partial class MainWindow : Window
         bool CaseSensitive,
         AdvancedSearchQuery? AdvancedQuery);
 
-    private sealed class DocumentTab(string filePath) : IDisposable
+    private sealed class DocumentTab(string filePath, SshTarget? remoteTarget = null) : IDisposable
     {
         public string FilePath { get; } = filePath;
-        public string DisplayName => Path.GetFileName(FilePath);
+        public string DisplayName => RemoteTarget is null ? Path.GetFileName(FilePath) : $"{Path.GetFileName(FilePath)} ({RemoteTarget.Host})";
         public string CloseTip => Loc.S.CloseTabTip;
-        public LogFileDocument? Document { get; set; }
+        public SshTarget? RemoteTarget { get; } = remoteTarget;
+        public ILogDocument? Document { get; set; }
         public LogTextEncoding EncodingKind { get; private set; } = LogTextEncoding.Utf8;
         public RangeObservableCollection<LogLine> LogLines { get; } = new();
         public RangeObservableCollection<LogSearchResult> SearchResults { get; } = new();
@@ -147,7 +148,9 @@ public sealed partial class MainWindow : Window
     private readonly ObservableCollection<DocumentTab> _tabs = new();
     private readonly SemaphoreSlim _openGate = new(1, 1);
 
-    private LogFileDocument? _document;
+    private ILogDocument? _document;
+    private CancellationTokenSource? _pageCts;
+    private bool _isUpdatingRemoteMemory;
     private DocumentTab? _currentTab;
     private CancellationTokenSource? _searchCts;
     private int _pageLineCount = MinPageLineCount;
@@ -217,7 +220,11 @@ public sealed partial class MainWindow : Window
         ResetStatus();
         UpdateControlState();
 
-        _memoryStatusTimer.Tick += (_, _) => UpdateMemoryStatus();
+        _memoryStatusTimer.Tick += async (_, _) =>
+        {
+            await RefreshRemoteMemoryStatusAsync();
+            UpdateMemoryStatus();
+        };
         _memoryStatusTimer.Start();
         if (_settings.InactiveMemoryReleaseMinutes > 0)
         {
@@ -250,9 +257,18 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async Task OpenOrSelectTabAsync(string filePath)
+    private async void SshButton_Click(object sender, RoutedEventArgs e)
     {
-        filePath = Path.GetFullPath(filePath);
+        var dialog = new SshOpenDialog(this);
+        if (dialog.ShowDialog() == true && dialog.Document is { } document)
+        {
+            await OpenOrSelectTabAsync(document.FilePath, document);
+        }
+    }
+
+    private async Task OpenOrSelectTabAsync(string filePath, SshLogDocument? remoteDocument = null)
+    {
+        filePath = remoteDocument?.FilePath ?? Path.GetFullPath(filePath);
         await _openGate.WaitAsync();
         try
         {
@@ -262,19 +278,21 @@ public sealed partial class MainWindow : Window
                 await Task.Delay(20);
             }
 
-            var existing = _tabs.FirstOrDefault(tab =>
-                string.Equals(tab.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+            var existing = _tabs.FirstOrDefault(tab => remoteDocument is null
+                ? tab.RemoteTarget is null && string.Equals(tab.FilePath, filePath, StringComparison.OrdinalIgnoreCase)
+                : tab.RemoteTarget == remoteDocument.Target);
             if (existing is not null)
             {
+                remoteDocument?.Dispose();
                 SelectDocumentTab(existing);
                 return;
             }
 
             var previous = _currentTab;
-            var tab = new DocumentTab(filePath);
+            var tab = new DocumentTab(filePath, remoteDocument?.Target);
             _tabs.Add(tab);
             SelectDocumentTab(tab);
-            await OpenFileAsync(filePath, encodingOverride: null, startLineNumber: 1);
+            await OpenFileAsync(filePath, encodingOverride: null, startLineNumber: 1, remoteDocument);
             if (_document is null)
             {
                 _isChangingTabSelection = true;
@@ -410,6 +428,7 @@ public sealed partial class MainWindow : Window
         }
 
         SaveCurrentTabState();
+        _pageCts?.Cancel();
         _liveRefreshTimer.Stop();
         _currentTab = tab;
 
@@ -469,7 +488,7 @@ public sealed partial class MainWindow : Window
             RefreshLogTextBoxes();
             RefreshSearchTextBoxes();
             UpdateLineNumberColumnWidth();
-            SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(_searchResults.Count);
+            SearchResultStatusTextBlock.Text = FormatSearchResultCount(_searchResults.Count);
             SearchStatusTextBlock.Text = string.IsNullOrEmpty(tab.SearchStatus) ? Loc.S.Ready : tab.SearchStatus;
             SearchProgressBar.Visibility = Visibility.Collapsed;
             ConfigureScrollBar();
@@ -728,10 +747,10 @@ public sealed partial class MainWindow : Window
             return false;
         }
 
-        lineNumber = Math.Clamp(lineNumber, 1, document.LineCount);
+        lineNumber = Math.Clamp(lineNumber, 1, Math.Max(1, document.LineCount));
         var maxStartLine = Math.Max(1, document.LineCount - _pageLineCount + 1);
         _highlightedLineNumber = lineNumber;
-        LoadPageByLineNumber(Math.Min(lineNumber, maxStartLine), updateScrollBar: true);
+        _ = LoadPageByLineNumberAsync(Math.Min(lineNumber, maxStartLine), updateScrollBar: true);
         return true;
     }
     private void CancelSearchButton_Click(object sender, RoutedEventArgs e)
@@ -969,6 +988,7 @@ public sealed partial class MainWindow : Window
 
         OpenButton.Content = s.OpenButton;
         OpenButton.ToolTip = s.OpenButtonTip;
+        SshButton.ToolTip = s.SshButtonTip;
         RefreshButton.Content = s.RefreshButton;
         RefreshButton.ToolTip = s.RefreshButtonTip;
         UpdateLiveRefreshText();
@@ -1032,7 +1052,7 @@ public sealed partial class MainWindow : Window
 
     private void RefreshStatusTexts()
     {
-        SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(_searchResults.Count);
+        SearchResultStatusTextBlock.Text = FormatSearchResultCount(_searchResults.Count);
         UpdateMemoryStatus();
 
         if (_document is null)
@@ -1420,7 +1440,7 @@ public sealed partial class MainWindow : Window
         }
 
         _highlightedLineNumber = result.LineNumber;
-        LoadPageByLineNumber(startLine, updateScrollBar: true);
+        _ = LoadPageByLineNumberAsync(startLine, updateScrollBar: true);
     }
 
     private void ClearLogHighlight()
@@ -1716,7 +1736,7 @@ public sealed partial class MainWindow : Window
 
         var maxStartLine = Math.Max(1, _document.LineCount - _pageLineCount + 1);
         var targetLineNumber = Math.Clamp(_currentLineNumber, 1, maxStartLine);
-        LoadPageByLineNumber(targetLineNumber, updateScrollBar: true);
+        _ = LoadPageByLineNumberAsync(targetLineNumber, updateScrollBar: true);
     }
 
     private void MainLogGrid_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
@@ -1807,6 +1827,7 @@ public sealed partial class MainWindow : Window
             var released = false;
             foreach (var tab in _tabs)
             {
+                if (tab.RemoteTarget is not null) continue;
                 released |= tab.Document is not null;
                 tab.ReleaseDocument();
             }
@@ -1816,7 +1837,7 @@ public sealed partial class MainWindow : Window
                 return;
             }
 
-            _document = null;
+            _document = _currentTab?.Document;
             _documentsReleasedForInactivity = true;
             ReleaseUnusedMemory();
             UpdateMemoryStatus();
@@ -1843,7 +1864,7 @@ public sealed partial class MainWindow : Window
             var tabs = _tabs
                 .OrderBy(tab => ReferenceEquals(tab, _currentTab) ? 0 : 1)
                 .ToList();
-            var pendingTabs = tabs.Where(tab => tab.Document is null).ToList();
+            var pendingTabs = tabs.Where(tab => tab.RemoteTarget is null && tab.Document is null).ToList();
             var fileSizes = pendingTabs.ToDictionary(tab => tab, tab => GetFileSizeOrZero(tab.FilePath));
             var totalBytes = fileSizes.Values.Sum(static bytes => (double)bytes);
             var completedBytes = 0d;
@@ -1880,7 +1901,7 @@ public sealed partial class MainWindow : Window
 
             UpdateReloadProgress(100);
 
-            _documentsReleasedForInactivity = _tabs.Any(tab => tab.Document is null);
+            _documentsReleasedForInactivity = _tabs.Any(tab => tab.RemoteTarget is null && tab.Document is null);
             if (_isLiveRefreshEnabled && _document is not null)
             {
                 _liveRefreshTimer.Start();
@@ -1905,6 +1926,7 @@ public sealed partial class MainWindow : Window
         _memoryStatusTimer.Stop();
         _inactiveMemoryReleaseTimer.Stop();
         _liveRefreshTimer.Stop();
+        _pageCts?.Cancel();
         _searchCts?.Cancel();
         _searchCts?.Dispose();
         SaveCurrentTabState();
@@ -1955,7 +1977,7 @@ public sealed partial class MainWindow : Window
 
         try
         {
-            var appendResult = await Task.Run(document.AppendNewContent);
+            var appendResult = await document.RefreshAsync();
             if (appendResult.IsTruncated)
             {
                 await OpenFileAsync(document.FilePath, document.EncodingKind, Math.Max(1, _currentLineNumber));
@@ -1985,6 +2007,7 @@ public sealed partial class MainWindow : Window
             }
 
             await RefreshLiveSearchResultsAsync(firstChangedLine);
+            SearchResultStatusTextBlock.Text = FormatSearchResultCount(_searchResults.Count);
         }
         catch (Exception ex)
         {
@@ -2006,6 +2029,13 @@ public sealed partial class MainWindow : Window
         if (document is null || criteria is null)
         {
             return;
+        }
+
+        if (document is SshLogDocument && _searchResultsByLineNumber.Remove(firstLineNumber, out var previous))
+        {
+            _searchResultLineNumbers.Remove(firstLineNumber);
+            _searchResults.Remove(previous);
+            RefreshSearchTextBoxes();
         }
 
         using var cts = new CancellationTokenSource();
@@ -2030,7 +2060,7 @@ public sealed partial class MainWindow : Window
             cts.Token);
     }
 
-    private bool IsLogViewAtTail(LogFileDocument document)
+    private bool IsLogViewAtTail(ILogDocument document)
     {
         return _logLines.Count == 0 || _nextOffset >= document.FileSize;
     }
@@ -2053,7 +2083,7 @@ public sealed partial class MainWindow : Window
         }
 
         var startLine = Math.Max(1, _document.LineCount - _pageLineCount + 1);
-        LoadPageByLineNumber(startLine, updateScrollBar: true);
+        _ = LoadPageByLineNumberAsync(startLine, updateScrollBar: true);
     }
 
     private void ApplyTheme(AppTheme theme)
@@ -2117,9 +2147,10 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async Task OpenFileAsync(string filePath, LogTextEncoding? encodingOverride, long startLineNumber)
+    private async Task OpenFileAsync(string filePath, LogTextEncoding? encodingOverride, long startLineNumber, SshLogDocument? preparedDocument = null)
     {
         CancelCurrentSearch();
+        _pageCts?.Cancel();
         _isOpening = true;
         SearchStatusTextBlock.Text = Loc.S.Loading;
         SearchProgressBar.Visibility = Visibility.Collapsed;
@@ -2160,7 +2191,10 @@ public sealed partial class MainWindow : Window
             }
 
             var stopwatch = Stopwatch.StartNew();
-            var newDocument = await Task.Run(() => LogFileDocument.Open(filePath, encodingOverride, progress));
+            ILogDocument newDocument = preparedDocument is not null ? preparedDocument
+                : _currentTab?.RemoteTarget is { } target
+                    ? await SshLogDocument.OpenAsync(target, encodingOverride ?? LogTextEncoding.Utf8)
+                    : await Task.Run(() => LogFileDocument.Open(filePath, encodingOverride, progress));
             stopwatch.Stop();
             UpdateReloadProgress(100);
             _document = newDocument;
@@ -2169,7 +2203,7 @@ public sealed partial class MainWindow : Window
                 _currentTab.Document = newDocument;
             }
 
-            SaveRecentFile(filePath);
+            if (newDocument is LogFileDocument) SaveRecentFile(filePath);
 
             SelectEncoding(newDocument.EncodingKind);
             UpdateLineNumberColumnWidth();
@@ -2177,7 +2211,7 @@ public sealed partial class MainWindow : Window
             SearchStatusTextBlock.Text = Loc.S.LoadDone(stopwatch.Elapsed.TotalSeconds);
 
             ConfigureScrollBar();
-            LoadPageByLineNumber(Math.Max(1, startLineNumber), updateScrollBar: true);
+            await LoadPageByLineNumberAsync(Math.Max(1, startLineNumber), updateScrollBar: true);
         }
         catch (Exception ex)
         {
@@ -2203,16 +2237,21 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void LoadPageByLineNumber(long startLineNumber, bool updateScrollBar)
+    private async Task LoadPageByLineNumberAsync(long startLineNumber, bool updateScrollBar)
     {
-        if (_document is null)
+        var document = _document;
+        if (document is null)
         {
             return;
         }
 
+        _pageCts?.Cancel();
+        using var cts = new CancellationTokenSource();
+        _pageCts = cts;
         try
         {
-            var page = _document.ReadLinesFromLine(startLineNumber, _pageLineCount);
+            var page = await document.ReadPageAsync(startLineNumber, _pageLineCount, cts.Token);
+            if (cts.IsCancellationRequested || !ReferenceEquals(document, _document)) return;
 
             _logLines.Clear();
             _logLines.AddRange(page.Lines);
@@ -2229,10 +2268,13 @@ public sealed partial class MainWindow : Window
 
             UpdateDocumentStatus();
         }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            _ = ShowErrorAsync(Loc.S.ReadFailedTitle, DescribeException(ex));
+            if (!cts.IsCancellationRequested && ReferenceEquals(document, _document))
+                await ShowErrorAsync(Loc.S.ReadFailedTitle, DescribeException(ex));
         }
+        finally { if (ReferenceEquals(_pageCts, cts)) _pageCts = null; }
     }
 
     private async Task StartSearchAsync()
@@ -2319,7 +2361,7 @@ public sealed partial class MainWindow : Window
             SaveSearchHistory(criteria.Pattern);
             SearchProgressBar.Value = 100;
             SearchStatusTextBlock.Text = Loc.S.SearchDone(summary.MatchCount, stopwatch.Elapsed.TotalSeconds);
-            SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(summary.MatchCount);
+            SearchResultStatusTextBlock.Text = FormatSearchResultCount(document is SshLogDocument remote ? remote.ReturnedCount : summary.MatchCount);
         }
         catch (OperationCanceledException)
         {
@@ -2392,7 +2434,7 @@ public sealed partial class MainWindow : Window
                 }
                 else if (targetTab.SearchResultsByLineNumber.TryGetValue(result.LineNumber, out var existing))
                 {
-                    existing.InvalidateText();
+                    existing.RefreshFrom(result);
                     refreshedExisting = true;
                 }
             }
@@ -2413,11 +2455,15 @@ public sealed partial class MainWindow : Window
                 RefreshSearchTextBoxes();
                 UpdateSearchScrollAvailability();
                 UpdateSearchScrollThumb();
-                SearchResultStatusTextBlock.Text = Loc.S.SearchResultCount(searchResults.Count);
+                SearchResultStatusTextBlock.Text = FormatSearchResultCount(searchResults.Count);
                 UpdateControlState();
             }
         }, DispatcherPriority.Background);
     }
+
+    private string FormatSearchResultCount(long returned) => _document is SshLogDocument remote
+        ? Loc.S.SshResultCount(remote.MatchCount, (int)returned)
+        : Loc.S.SearchResultCount(returned);
 
     private void ClearSearchResults()
     {
@@ -2538,6 +2584,7 @@ public sealed partial class MainWindow : Window
 
         SearchProgressBar.Value = percent;
         SearchStatusTextBlock.Text = Loc.S.SearchingCount(progress.MatchCount);
+        UpdateMemoryStatus();
     }
 
     private void UpdateReloadProgress(double percent)
@@ -2590,11 +2637,28 @@ public sealed partial class MainWindow : Window
 
     private void UpdateMemoryStatus()
     {
+        if (_document is SshLogDocument remote)
+        {
+            MemoryStatusTextBlock.Text = remote.MemoryStatus is { } memory
+                ? Loc.S.MemoryActive(FormatBytes(memory.AvailableBytes), FormatBytes(memory.ProcessBytes))
+                : Loc.S.SshMemoryUnavailable(remote.Target.Host);
+            MemoryStatusTextBlock.ToolTip = remote.Target.Host + "\n" + Loc.S.SshMemoryTip;
+            return;
+        }
         var available = LogFileDocument.GetAvailablePhysicalMemory();
-        var memoryUsage = _tabs.Sum(tab => tab.Document?.MemoryUsage ?? 0);
-        MemoryStatusTextBlock.Text = _tabs.Count == 0
-            ? Loc.S.MemoryIdle(FormatBytes(available), FormatBytes(LogFileDocument.CurrentOpenLimit))
-            : Loc.S.MemoryActive(FormatBytes(available), FormatBytes(memoryUsage));
+        using var process = Process.GetCurrentProcess();
+        MemoryStatusTextBlock.Text = Loc.S.MemoryActive(FormatBytes(available), FormatBytes(process.WorkingSet64));
+        MemoryStatusTextBlock.ToolTip = Loc.S.LocalMemoryTip;
+    }
+
+    private async Task RefreshRemoteMemoryStatusAsync()
+    {
+        if (_document is not SshLogDocument remote || _isUpdatingRemoteMemory || _isOpening || _isSearching || _isRefreshingLive)
+            return;
+        _isUpdatingRemoteMemory = true;
+        try { await remote.RefreshMemoryStatusAsync(); }
+        catch (Exception) { } // The status displays unavailable instead of reusing a stale measurement.
+        finally { _isUpdatingRemoteMemory = false; }
     }
 
     private void ResetStatus()
@@ -2631,6 +2695,9 @@ public sealed partial class MainWindow : Window
         var canChangeDocument = !_isOpening && !_isSearching && !_isRefreshingLive;
 
         OpenButton.IsEnabled = canChangeDocument;
+        SshButton.IsEnabled = canChangeDocument;
+        ExportSearchButton.ToolTip = _document is SshLogDocument ? Loc.S.SshExportTip : Loc.S.ExportButtonTip;
+        SearchResultStatusTextBlock.ToolTip = _document is SshLogDocument ? Loc.S.SshHint : null;
         RecentButton.IsEnabled = canChangeDocument && _settings.RecentFiles.Count > 0;
         RefreshButton.IsEnabled = hasDocument && canChangeDocument;
         LiveRefreshButton.IsEnabled = hasDocument && !_isOpening;
@@ -2695,7 +2762,7 @@ public sealed partial class MainWindow : Window
             ? 0
             : (long)Math.Round(thumbTop / maxThumbTop * maxValue);
 
-        LoadPageByLineNumber(lineOffset + 1, updateScrollBar: true);
+        _ = LoadPageByLineNumberAsync(lineOffset + 1, updateScrollBar: true);
     }
 
     private void ScrollLogByLines(long lineDelta)
@@ -2712,7 +2779,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        LoadPageByLineNumber(targetLineNumber, updateScrollBar: true);
+        _ = LoadPageByLineNumberAsync(targetLineNumber, updateScrollBar: true);
     }
 
     private double GetLogScrollThumbHeight()

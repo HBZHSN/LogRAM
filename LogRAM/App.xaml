@@ -316,6 +316,17 @@
                                               IsHitTestVisible="False"
                                               SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" />
 
+                            <TextBox x:Name="PART_EditableTextBox"
+                                     Margin="2,1,22,1"
+                                     Padding="5,0"
+                                     Height="Auto"
+                                     BorderThickness="0"
+                                     Background="Transparent"
+                                     Foreground="{TemplateBinding Foreground}"
+                                     VerticalContentAlignment="Center"
+                                     IsReadOnly="{TemplateBinding IsReadOnly}"
+                                     Visibility="Collapsed" />
+
                             <Popup x:Name="Popup"
                                    AllowsTransparency="True"
                                    Focusable="False"
@@ -338,6 +349,10 @@
                             </Popup>
                         </Grid>
                         <ControlTemplate.Triggers>
+                            <Trigger Property="IsEditable" Value="True">
+                                <Setter TargetName="ContentSite" Property="Visibility" Value="Collapsed" />
+                                <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible" />
+                            </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45" />
                             </Trigger>

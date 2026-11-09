@@ -9,13 +9,16 @@ internal sealed class ViewerForm : Form
     private readonly string _settingsPath;
     private readonly ViewerSettings _settings;
     private readonly List<LogSession> _sessions = new();
+    private readonly CancellationTokenSource _closingCts = new();
     private LogSession? _current;
-    private CancellationTokenSource? _operation;
-    private bool _busy, _dark, _updating, _closing, _dialogOpen;
+    private CancellationTokenSource? _operation, _pageCts;
+    private bool _busy, _backgroundBusy, _dark, _updating, _closing, _dialogOpen, _showingDocumentStatus;
     private int _openRequestGeneration;
+    private long _lastRemoteLiveTick, _lastRemoteMemoryTick;
     private Keys _workspaceShortcut = Keys.Control | Keys.Alt | Keys.L;
     private readonly ToolStrip _queryBar = new() { Dock = DockStyle.Top, GripStyle = ToolStripGripStyle.Hidden };
     private readonly ToolStripButton _refresh = new(), _live = new() { CheckOnClick = true },
+        _ssh = new() { DisplayStyle = ToolStripItemDisplayStyle.Text, Text = "SSH" },
         _search = new(), _cancel = new(), _regex = new() { CheckOnClick = true }, _case = new() { CheckOnClick = true },
         _export = new(), _previous = new(), _next = new(), _go = new();
     private readonly ToolStripComboBox _query = new() { AutoSize = false, Width = 200 };
@@ -46,7 +49,7 @@ internal sealed class ViewerForm : Form
         Size = new Size(900, 650);
         _query.Items.AddRange(_settings.SearchHistory.Cast<object>().ToArray());
         _queryBar.Items.AddRange(new ToolStripItem[] { _query, _search, _cancel, new ToolStripSeparator(),
-            _regex, _case, new ToolStripSeparator(), _refresh, _live, new ToolStripSeparator(),
+            _regex, _case, new ToolStripSeparator(), _refresh, _live, _ssh, new ToolStripSeparator(),
             _lineLabel, _line, _go, new ToolStripSeparator(), _previous, _next, _export });
         _statusBar.Items.AddRange(new ToolStripItem[] { _status, _count, _progress });
         _split.Panel1.Controls.Add(_source);
@@ -57,6 +60,7 @@ internal sealed class ViewerForm : Form
         Controls.Add(_split);
         Controls.Add(_statusBar);
         _refresh.Click += async (_, _) => await ReloadAsync();
+        _ssh.Click += async (_, _) => await OpenSshDialogAsync(returnIfCancelled: false);
         _search.Click += async (_, _) => await SearchAsync();
         _cancel.Click += (_, _) => _operation?.Cancel();
         _export.Click += async (_, _) => await ExportAsync();
@@ -135,11 +139,18 @@ internal sealed class ViewerForm : Form
                     if (command.StartsWith("open\t", StringComparison.Ordinal))
                     {
                         var generation = _openRequestGeneration;
-                        while ((_busy || _dialogOpen) && !_closing && generation == _openRequestGeneration) await Task.Delay(20);
+                        while ((_busy || _backgroundBusy || _dialogOpen) && !_closing && generation == _openRequestGeneration) await Task.Delay(20);
                         if (_closing || generation != _openRequestGeneration) return;
                         var parts = command[5..].Split('\t', 2);
                         if (parts.Length == 2 && parts[0] is "utf8" or "gbk")
                             await OpenFileAsync(parts[1], parts[0] == "gbk" ? LogTextEncoding.Gbk : LogTextEncoding.Utf8);
+                    }
+                    else if (command.StartsWith("openssh", StringComparison.Ordinal))
+                    {
+                        var generation = _openRequestGeneration;
+                        while ((_busy || _backgroundBusy || _dialogOpen) && !_closing && generation == _openRequestGeneration) await Task.Delay(20);
+                        if (_closing || generation != _openRequestGeneration) return;
+                        await OpenSshDialogAsync(returnIfCancelled: command.EndsWith("\t0", StringComparison.Ordinal));
                     }
                     else if (command == "focus") { _query.Focus(); UpdatePages(); }
                     else if (command.StartsWith("theme\t", StringComparison.Ordinal)) ApplyTheme(command.EndsWith('1'));
@@ -153,17 +164,19 @@ internal sealed class ViewerForm : Form
                     else if (command.StartsWith("close\t", StringComparison.Ordinal))
                     {
                         var path = command[6..];
-                        if (_current?.Document.FilePath.Equals(path, StringComparison.OrdinalIgnoreCase) == true) _operation?.Cancel();
-                        while (_busy && !_closing) await Task.Delay(20);
+                        var comparison = path.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase) ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+                        if (_current?.Document.FilePath.Equals(path, comparison) == true) { _pageCts?.Cancel(); _operation?.Cancel(); }
+                        while ((_busy || _backgroundBusy) && !_closing) await Task.Delay(20);
                         if (_closing) return;
-                        var index = _sessions.FindIndex(item => item.Document.FilePath.Equals(path, StringComparison.OrdinalIgnoreCase));
+                        var index = _sessions.FindIndex(item => item.Document.FilePath.Equals(path, comparison));
                         if (index >= 0) CloseSession(index);
                     }
                     else if (command == "closeall")
                     {
                         _openRequestGeneration++;
+                        _pageCts?.Cancel();
                         _operation?.Cancel();
-                        while (_busy && !_closing) await Task.Delay(20);
+                        while ((_busy || _backgroundBusy) && !_closing) await Task.Delay(20);
                         if (_closing) return;
                         foreach (var session in _sessions) session.Dispose();
                         _sessions.Clear(); _current = null; SelectSession(-1);
@@ -176,30 +189,111 @@ internal sealed class ViewerForm : Form
         if (!_closing && IsHandleCreated) BeginInvoke(new Action(Close));
     }
 
+    private async Task OpenSshDialogAsync(bool returnIfCancelled)
+    {
+        if (_busy || _dialogOpen || _closing) return;
+        using var dialog = new SshOpenForm(_parent, _dark);
+        _dialogOpen = true;
+        SetBusy(_busy);
+        DialogResult result;
+        try { result = dialog.ShowDialog(this); }
+        finally { _dialogOpen = false; if (!_closing) SetBusy(_busy); }
+        if (_closing) { dialog.Document?.Dispose(); return; }
+        if (result != DialogResult.OK || dialog.Document is not { } remote)
+        {
+            if (returnIfCancelled && _current is null)
+                Native.PostMessage(_parent, Native.HideMessage, IntPtr.Zero, IntPtr.Zero);
+            return;
+        }
+        await OpenRemoteDocumentAsync(remote);
+    }
+
+    internal async Task OpenRemoteDocumentAsync(SshLogDocument remote)
+    {
+        if (_closing) { remote.Dispose(); return; }
+        var uri = remote.FilePath;
+        var host = remote.Target.Host;
+        var fileName = Path.GetFileName(remote.Target.Path.TrimEnd('/', '\\'));
+        if (string.IsNullOrEmpty(fileName)) fileName = remote.Target.Path;
+        var existing = _sessions.FindIndex(item => item.IsRemote && item.Document.FilePath.Equals(uri, StringComparison.Ordinal));
+        if (existing >= 0 && _sessions[existing].RemoteDocument?.MemoryStatus is not null)
+        {
+            remote.Dispose();
+            SelectSession(existing);
+        }
+        else
+        {
+            var session = new LogSession(remote);
+            await RunOperationAsync(async token =>
+            {
+                SetTransientStatus(T("正在加载日志…", "Loading log…"));
+                await session.FetchSourcePageAsync(1, Math.Max(VisibleRows(_source) * 2, 100), token);
+            });
+            if (_closing) { session.Dispose(); return; }
+            if (existing >= 0)
+            {
+                session.QueryText = _sessions[existing].QueryText;
+                session.Regex = _sessions[existing].Regex;
+                session.CaseSensitive = _sessions[existing].CaseSensitive;
+                session.Live = _sessions[existing].Live;
+                _sessions[existing].Dispose();
+                _sessions[existing] = session;
+                _current = null;
+                SelectSession(existing);
+            }
+            else
+            {
+                _sessions.Add(session);
+                SelectSession(_sessions.Count - 1);
+            }
+            _lastRemoteLiveTick = _lastRemoteMemoryTick = Environment.TickCount64;
+            DocumentStatus();
+        }
+        if (IsHandleCreated) Native.SendSshTab(_parent, Handle, uri, $"{fileName} ({host})");
+    }
+
     internal async Task OpenFileAsync(string path, LogTextEncoding? requestedEncoding = null)
     {
         if (_busy || _closing) return;
+        var isSsh = SshTarget.TryParseUri(path, out var sshTarget);
+        var comparison = isSsh ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
         await RunOperationAsync(async token =>
         {
-            path = Path.GetFullPath(path);
-            var existing = _sessions.FindIndex(item => item.Document.FilePath.Equals(path, StringComparison.OrdinalIgnoreCase));
+            if (!isSsh) path = Path.GetFullPath(path);
+            var existing = _sessions.FindIndex(item => item.Document.FilePath.Equals(path, comparison));
             if (existing >= 0) { SelectSession(existing); return; }
-            _status.Text = T("正在加载日志…", "Loading log…");
+            SetTransientStatus(T("正在加载日志…", "Loading log…"));
             var encoding = requestedEncoding ?? LogTextEncoding.Utf8;
-            var progress = new Progress<(long BytesRead, long TotalBytes)>(value => UpdateProgress(value.BytesRead, value.TotalBytes));
-            var document = await Task.Run(() => LogFileDocument.Open(path, encoding, progress, token), token);
+            ILogDocument document;
+            if (isSsh)
+            {
+                document = await SshLogDocument.OpenAsync(sshTarget, encoding, token);
+                path = document.FilePath;
+            }
+            else
+            {
+                var progress = new Progress<(long BytesRead, long TotalBytes)>(value => UpdateProgress(value.BytesRead, value.TotalBytes));
+                document = await Task.Run(() => LogFileDocument.Open(path, encoding, progress, token), token);
+            }
             if (_closing) { document.Dispose(); return; }
-            _sessions.Add(new LogSession(document));
+            var session = new LogSession(document);
+            if (session.IsRemote)
+            {
+                await session.FetchSourcePageAsync(1, Math.Max(VisibleRows(_source) * 2, 100), token);
+                _lastRemoteLiveTick = _lastRemoteMemoryTick = Environment.TickCount64;
+            }
+            _sessions.Add(session);
             SelectSession(_sessions.Count - 1);
             DocumentStatus();
         });
         if (!_closing && requestedEncoding is { } selectedEncoding && _current?.Document.EncodingKind != selectedEncoding &&
-            _current?.Document.FilePath.Equals(path, StringComparison.OrdinalIgnoreCase) == true)
+            _current?.Document.FilePath.Equals(path, comparison) == true)
             await ReloadAsync(selectedEncoding);
     }
 
     private void SelectSession(int index)
     {
+        _pageCts?.Cancel();
         if (_current is not null)
         {
             _current.QueryText = _query.Text;
@@ -238,12 +332,23 @@ internal sealed class ViewerForm : Form
         var encoding = requestedEncoding ?? session.Document.EncodingKind;
         await RunOperationAsync(async token =>
         {
-            _status.Text = T("正在重新加载…", "Reloading…");
-            var loadProgress = new Progress<(long BytesRead, long TotalBytes)>(value => UpdateProgress(value.BytesRead, value.TotalBytes));
-            var document = await Task.Run(() => LogFileDocument.Open(session.Document.FilePath, encoding, loadProgress, token), token);
+            SetTransientStatus(T("正在重新加载…", "Reloading…"));
+            ILogDocument document;
+            if (session.RemoteDocument is { } remote)
+                document = await SshLogDocument.OpenAsync(remote.Target, encoding, token);
+            else
+            {
+                var loadProgress = new Progress<(long BytesRead, long TotalBytes)>(value => UpdateProgress(value.BytesRead, value.TotalBytes));
+                document = await Task.Run(() => LogFileDocument.Open(session.Document.FilePath, encoding, loadProgress, token), token);
+            }
             if (_closing) { document.Dispose(); return; }
             var replacement = new LogSession(document) { SourceTop = session.SourceTop, QueryText = session.QueryText, Regex = session.Regex,
                 CaseSensitive = session.CaseSensitive, Live = session.Live };
+            if (replacement.IsRemote)
+            {
+                await replacement.FetchSourcePageAsync(replacement.SourceTop, Math.Max(VisibleRows(_source) * 2, 100), token);
+                _lastRemoteLiveTick = _lastRemoteMemoryTick = Environment.TickCount64;
+            }
             var index = _sessions.IndexOf(session);
             _sessions[index] = replacement;
             session.Dispose();
@@ -259,7 +364,7 @@ internal sealed class ViewerForm : Form
         var session = _current;
         await RunOperationAsync(async token =>
         {
-            _status.Text = T("正在搜索…", "Searching…");
+            SetTransientStatus(T("正在搜索…", "Searching…"));
             _selectedMatch = -1;
             var watch = Stopwatch.StartNew();
             var count = await session.SearchAsync(_query.Text, _regex.Checked, _case.Checked, token,
@@ -270,9 +375,9 @@ internal sealed class ViewerForm : Form
             _query.Items.AddRange(_settings.SearchHistory.Cast<object>().ToArray());
             _query.Text = session.QueryText;
             _settings.Save(_settingsPath);
-            _status.Text = T($"匹配 {count:N0} 行，用时 {watch.Elapsed.TotalSeconds:F2} 秒", $"{count:N0} matches in {watch.Elapsed.TotalSeconds:F2}s");
+            SetTransientStatus(T($"匹配 {count:N0} 行，用时 {watch.Elapsed.TotalSeconds:F2} 秒", $"{count:N0} matches in {watch.Elapsed.TotalSeconds:F2}s"));
             UpdatePages();
-            if (count > 0) ShowMatch(0);
+            if (session.MatchCount > 0) ShowMatch(0);
         });
     }
 
@@ -285,27 +390,28 @@ internal sealed class ViewerForm : Form
         finally { _dialogOpen = false; }
         if (_closing || _current is null) return;
         var path = Path.GetFullPath(dialog.FileName);
-        if (_sessions.Any(item => item.Document.FilePath.Equals(path, StringComparison.OrdinalIgnoreCase)))
+        if (_sessions.Any(item => !item.IsRemote && item.Document.FilePath.Equals(path, StringComparison.OrdinalIgnoreCase)))
         {
             ShowError(T("不能覆盖已打开的日志文件。", "Cannot overwrite an open source log."));
             return;
         }
         await RunOperationAsync(async token =>
         {
-            _status.Text = T("正在导出…", "Exporting…");
+            SetTransientStatus(T("正在导出…", "Exporting…"));
             await _current.ExportAsync(path, token);
-            _status.Text = T("导出完成", "Export complete");
+            SetTransientStatus(T("导出完成", "Export complete"));
         });
     }
 
     private async Task RunOperationAsync(Func<CancellationToken, Task> action)
     {
-        if (_busy) return;
+        while (_backgroundBusy && !_closing) await Task.Delay(15);
+        if (_busy || _closing) return;
         using var cancellation = new CancellationTokenSource();
         _operation = cancellation;
         SetBusy(true);
         try { await action(cancellation.Token); }
-        catch (OperationCanceledException) { if (!_closing) _status.Text = T("已取消，保留已返回的结果", "Cancelled; returned matches retained"); }
+        catch (OperationCanceledException) { if (!_closing) SetTransientStatus(T("已取消，保留已返回的结果", "Cancelled; returned matches retained")); }
         catch (Exception ex) { if (!_closing) ShowError(ex.Message); }
         finally
         {
@@ -317,6 +423,7 @@ internal sealed class ViewerForm : Form
     private void SetBusy(bool busy)
     {
         _busy = busy;
+        _ssh.Enabled = !busy && !_dialogOpen;
         _refresh.Enabled = _live.Enabled = _search.Enabled = _query.Enabled =
             _regex.Enabled = _case.Enabled = !busy && _current is not null;
         _export.Enabled = !busy && (_current?.MatchCount ?? 0) > 0;
@@ -335,16 +442,18 @@ internal sealed class ViewerForm : Form
     {
         if (_updating || _closing || _current is { IsRefreshing: true } || (IsHandleCreated && !Native.IsWindowVisible(Handle))) return;
         _updating = true;
-        var lines = (int)(_current?.Document.LineCount ?? 0);
+        var lineCount = _current?.Document.LineCount ?? 0;
+        var lines = (int)Math.Min(int.MaxValue, lineCount);
         var matches = _current?.MatchCount ?? 0;
+        var totalMatches = _current?.TotalMatchCount ?? 0;
         var sourceRows = VisibleRows(_source);
         var resultRows = VisibleRows(_results);
         if (_current is not null)
         {
-            _current.SourceTop = Math.Clamp(_current.SourceTop, 1, Math.Max(1, lines - sourceRows + 1));
+            _current.SourceTop = Math.Clamp(_current.SourceTop, 1, Math.Max(1, lineCount - sourceRows + 1));
             _current.ResultsTop = Math.Clamp(_current.ResultsTop, 0, Math.Max(0, matches - resultRows));
         }
-        SetScroll(_sourceScroll, lines, sourceRows, (int)(_current?.SourceTop ?? 1) - 1);
+        SetScroll(_sourceScroll, lines, sourceRows, (int)Math.Min(int.MaxValue - 1L, (_current?.SourceTop ?? 1) - 1));
         SetScroll(_resultsScroll, matches, resultRows, _current?.ResultsTop ?? 0);
         _source.RowCount = Math.Min(sourceRows, lines);
         _results.RowCount = Math.Min(resultRows, matches);
@@ -352,8 +461,32 @@ internal sealed class ViewerForm : Form
         _results.Invalidate();
         ResizeTextColumn(_source, false);
         ResizeTextColumn(_results, true);
-        _count.Text = T($"{lines:N0} 行 | {matches:N0} 条结果", $"{lines:N0} lines | {matches:N0} matches");
+        _count.Text = totalMatches > matches
+            ? T($"{lineCount:N0} 行 | 已回传 {matches:N0} / {totalMatches:N0} 条结果", $"{lineCount:N0} lines | {matches:N0} / {totalMatches:N0} matches")
+            : T($"{lineCount:N0} 行 | {matches:N0} 条结果", $"{lineCount:N0} lines | {matches:N0} matches");
+        _count.ToolTipText = _current?.IsRemote == true ? Loc.S.SshHint : null;
+        _export.ToolTipText = _current?.IsRemote == true ? Loc.S.SshExportTip : T("导出搜索结果", "Export search results");
         _updating = false;
+        if (_current is { IsRemote: true } remoteSession && !remoteSession.HasSourcePage(remoteSession.SourceTop, sourceRows))
+            _ = EnsureSourcePageAsync(remoteSession, remoteSession.SourceTop, sourceRows);
+    }
+
+    private async Task EnsureSourcePageAsync(LogSession session, long startLine, int sourceRows)
+    {
+        _pageCts?.Cancel();
+        using var cts = new CancellationTokenSource();
+        _pageCts = cts;
+        try
+        {
+            await session.FetchSourcePageAsync(startLine, Math.Max(sourceRows * 2, 100), cts.Token);
+            if (cts.IsCancellationRequested || _closing || _current != session) return;
+            _source.Invalidate();
+            ResizeTextColumn(_source, false);
+            if (_showingDocumentStatus) DocumentStatus();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { if (!cts.IsCancellationRequested && !_closing && _current == session) SetTransientStatus(ex.Message); }
+        finally { if (ReferenceEquals(_pageCts, cts)) _pageCts = null; }
     }
 
     private void ResizeTextColumn(DataGridView grid, bool results)
@@ -366,7 +499,8 @@ internal sealed class ViewerForm : Form
                 var index = _current.ResultsTop + row;
                 if (results && index >= _current.MatchCount) break;
                 var line = results ? _current.MatchLine(index) : _current.SourceTop + row;
-                width = Math.Max(width, TextRenderer.MeasureText(_current.Document.GetLineText(line), grid.Font).Width + 16);
+                var text = results ? _current.GetResultLineText(index) : _current.GetSourceLineText(line);
+                width = Math.Max(width, TextRenderer.MeasureText(text, grid.Font).Width + 16);
             }
         }
         // shortcut: DataGridView columns stop at 65536 px; copy a cell to inspect longer lines.
@@ -389,7 +523,7 @@ internal sealed class ViewerForm : Form
         if (results && index >= _current.MatchCount) return;
         var line = results ? _current.MatchLine(index) : _current.SourceTop + e.RowIndex;
         if (line > _current.Document.LineCount) return;
-        e.Value = e.ColumnIndex == 0 ? line : _current.Document.GetLineText(line);
+        e.Value = e.ColumnIndex == 0 ? line : (results ? _current.GetResultLineText(index) : _current.GetSourceLineText(line));
     }
 
     private void ScrollPage(bool results, int delta)
@@ -472,11 +606,67 @@ internal sealed class ViewerForm : Form
         try { using var process = Process.GetProcessById(_owner); if (process.HasExited) { Close(); return; } }
         catch (ArgumentException) { Close(); return; }
         if (_busy) { UpdatePages(); return; }
+        if (_dialogOpen || _backgroundBusy || _current is null) return;
+        if (_current is { IsRemote: true } remoteSession)
+        {
+            var now = Environment.TickCount64;
+            if (remoteSession.Live && now - _lastRemoteLiveTick >= 1000)
+            {
+                _lastRemoteLiveTick = _lastRemoteMemoryTick = now;
+                _backgroundBusy = true;
+                try
+                {
+                    var follow = remoteSession.SourceTop + VisibleRows(_source) >= remoteSession.Document.LineCount;
+                    var appended = await remoteSession.RefreshAsync(_closingCts.Token);
+                    if (_closing || _current != remoteSession) return;
+                    if (appended.IsTruncated)
+                    {
+                        remoteSession.Live = false;
+                        _live.Checked = false;
+                        SetTransientStatus(T("日志已截断，请刷新重新加载。", "Log truncated; refresh to reload."));
+                        return;
+                    }
+                    if (appended.HasNewContent)
+                    {
+                        if (follow) remoteSession.SourceTop = Math.Max(1, remoteSession.Document.LineCount - VisibleRows(_source) + 1);
+                        await remoteSession.FetchSourcePageAsync(remoteSession.SourceTop, Math.Max(VisibleRows(_source) * 2, 100), _closingCts.Token);
+                        if (_closing || _current != remoteSession) return;
+                        UpdatePages();
+                        DocumentStatus();
+                    }
+                    else if (_showingDocumentStatus) DocumentStatus();
+                }
+                catch (OperationCanceledException) when (_closing) { }
+                catch (Exception ex)
+                {
+                    if (!_closing && _current == remoteSession)
+                    {
+                        remoteSession.Live = false;
+                        _live.Checked = false;
+                        SetTransientStatus(ex.Message);
+                    }
+                }
+                finally { _backgroundBusy = false; }
+            }
+            else if (!remoteSession.Live && now - _lastRemoteMemoryTick >= 2000)
+            {
+                _lastRemoteMemoryTick = now;
+                _backgroundBusy = true;
+                try
+                {
+                    await remoteSession.RemoteDocument!.RefreshMemoryStatusAsync();
+                    if (!_closing && _current == remoteSession && _showingDocumentStatus) DocumentStatus();
+                }
+                catch { if (!_closing && _current == remoteSession) DocumentStatus(); }
+                finally { _backgroundBusy = false; }
+            }
+            return;
+        }
         if (_current is not { Live: true } session) return;
         try { if (!session.HasPendingRefresh && new FileInfo(session.Document.FilePath).Length == session.Document.FileSize) return; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            session.Live = false; _live.Checked = false; _status.Text = ex.Message; return;
+            session.Live = false; _live.Checked = false; SetTransientStatus(ex.Message); return;
         }
         await RunOperationAsync(async token =>
         {
@@ -493,7 +683,7 @@ internal sealed class ViewerForm : Form
             {
                 session.Live = false;
                 _live.Checked = false;
-                _status.Text = T("日志已截断，请刷新重新加载。", "Log truncated; refresh to reload.");
+                SetTransientStatus(T("日志已截断，请刷新重新加载。", "Log truncated; refresh to reload."));
                 return;
             }
             if (!appended.HasNewContent) return;
@@ -502,12 +692,37 @@ internal sealed class ViewerForm : Form
         });
     }
 
-    private void DocumentStatus() => _status.Text = _current is null ? T("打开日志开始查看", "Open a log to begin") :
-        $"{Path.GetFileName(_current.Document.FilePath)} | {_current.Document.EncodingKind} | {_current.Document.MemoryUsage / 1048576.0:N1} MB";
+    private void SetTransientStatus(string text)
+    {
+        _showingDocumentStatus = false;
+        _status.Text = text;
+    }
+
+    private void DocumentStatus()
+    {
+        _showingDocumentStatus = true;
+        if (_current is null)
+        {
+            _status.Text = T("打开日志开始查看", "Open a log to begin");
+            return;
+        }
+        if (_current.RemoteDocument is { } remote)
+        {
+            var name = Path.GetFileName(remote.Target.Path.TrimEnd('/', '\\'));
+            if (string.IsNullOrEmpty(name)) name = remote.Target.Path;
+            _status.Text = remote.MemoryStatus is { } mem
+                ? T($"{name} ({remote.Target.Host}) | {remote.EncodingKind} | 远程可用 {mem.AvailableBytes / 1048576.0:N1} MB · 占用 {mem.ProcessBytes / 1048576.0:N1} MB",
+                    $"{name} ({remote.Target.Host}) | {remote.EncodingKind} | Free {mem.AvailableBytes / 1048576.0:N1} MB · Worker {mem.ProcessBytes / 1048576.0:N1} MB")
+                : T($"{name} ({remote.Target.Host}) | {remote.EncodingKind} | 无法获取远程内存",
+                    $"{name} ({remote.Target.Host}) | {remote.EncodingKind} | Remote memory unavailable");
+            return;
+        }
+        _status.Text = $"{Path.GetFileName(_current.Document.FilePath)} | {_current.Document.EncodingKind} | {_current.Document.MemoryUsage / 1048576.0:N1} MB";
+    }
 
     private void ShowError(string message)
     {
-        _status.Text = message;
+        SetTransientStatus(message);
         MessageBox.Show(this, message, "LogRAM", MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 
@@ -540,6 +755,7 @@ internal sealed class ViewerForm : Form
 
     private void Translate()
     {
+        Loc.SetLanguage(_settings.Language == "en" ? AppLanguage.English : AppLanguage.Chinese);
         _refresh.Text = T("刷新", "Refresh"); _live.Text = T("实时", "Live");
         _search.Text = T("搜索", "Search"); _cancel.Text = T("取消", "Cancel"); _regex.Text = T("正则", "Regex");
         _case.Text = T("大小写", "Case"); _export.Text = T("导出", "Export");
@@ -549,7 +765,9 @@ internal sealed class ViewerForm : Form
         _source.Columns[1].HeaderText = T("原文 / 上下文", "Source / context");
         _results.Columns[1].HeaderText = T("搜索结果", "Search results");
         foreach (ToolStripItem item in _queryBar.Items) if (item is ToolStripButton) item.AccessibleName = item.ToolTipText = item.Text;
-        _regex.Text = ".*"; _case.Text = "Aa";
+        _regex.Text = ".*"; _case.Text = "Aa"; _ssh.Text = "SSH";
+        _ssh.AccessibleName = "SSH";
+        _ssh.ToolTipText = Loc.S.SshButtonTip;
         _regex.ToolTipText = T("正则表达式", "Regular expression"); _case.ToolTipText = T("区分大小写", "Match case");
         _search.ToolTipText = T("开始搜索（Enter / Ctrl+F）", "Search (Enter / Ctrl+F)");
         _cancel.ToolTipText = T("取消当前操作（Esc）", "Cancel current operation (Esc)");
@@ -558,7 +776,7 @@ internal sealed class ViewerForm : Form
         _go.ToolTipText = T("跳转到指定行（Ctrl+G）", "Go to line (Ctrl+G)");
         _previous.ToolTipText = T("上一结果（Shift+F3）", "Previous result (Shift+F3)");
         _next.ToolTipText = T("下一结果（F3）", "Next result (F3)");
-        _export.ToolTipText = T("导出搜索结果", "Export search results");
+        _export.ToolTipText = _current?.IsRemote == true ? Loc.S.SshExportTip : T("导出搜索结果", "Export search results");
         _query.ToolTipText = T("关键词、正则或 in(...);notin(...)，Enter 搜索", "Text, regex or in(...);notin(...); Enter to search");
         _query.AccessibleName = _query.ComboBox.AccessibleName = T("搜索条件", "Search query");
         _line.AccessibleName = _line.TextBox.AccessibleName = T("跳转行号", "Go to line number");
@@ -609,6 +827,8 @@ internal sealed class ViewerForm : Form
     {
         _closing = true;
         _timer.Stop();
+        _closingCts.Cancel();
+        _pageCts?.Cancel();
         _operation?.Cancel();
         _settings.Save(_settingsPath);
         base.OnFormClosing(e);
@@ -619,9 +839,10 @@ internal sealed class ViewerForm : Form
         if (disposing)
         {
             _timer.Dispose();
+            _closingCts.Dispose();
             foreach (ToolStripItem item in _queryBar.Items) item.Image?.Dispose();
             // shortcut: an active operation owns its document until process exit; do not dispose while its search threads run.
-            if (!_busy) { foreach (var session in _sessions) session.Dispose(); _sessions.Clear(); }
+            if (!_busy && !_backgroundBusy) { foreach (var session in _sessions) session.Dispose(); _sessions.Clear(); }
         }
         base.Dispose(disposing);
     }

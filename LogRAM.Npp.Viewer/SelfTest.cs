@@ -52,7 +52,7 @@ internal static class SelfTest
             var gbkPath = Path.Combine(directory, "gbk.log");
             File.WriteAllText(gbkPath, "信息\n中文错误\n", Encoding.GetEncoding(936));
             using var gbk = new LogSession(LogFileDocument.Open(gbkPath, LogTextEncoding.Gbk));
-            Check(await gbk.SearchAsync("错误", false, true, default) == 1 && gbk.Document.GetLineText(2) == "中文错误", "GBK");
+            Check(await gbk.SearchAsync("错误", false, true, default) == 1 && gbk.GetSourceLineText(2) == "中文错误", "GBK");
             var settingsPath = Path.Combine(directory, "settings.json");
             var settings = ViewerSettings.Load(settingsPath);
             ViewerSettings.Remember(settings.RecentFiles, path);
@@ -69,7 +69,28 @@ internal static class SelfTest
                 "concurrent settings save and cleanup");
             await File.WriteAllTextAsync(path, "short");
             Check((await session.RefreshAsync(default)).IsTruncated, "truncation detection");
-            Console.WriteLine("PASS: search, Unicode/GBK, progress, cancellation, incremental tail, safe export, settings and truncation.");
+
+            var sshLogPath = Path.Combine(directory, "ssh remote.log");
+            await File.WriteAllTextAsync(sshLogPath, "INFO head\nERROR first\nwarning retry\n中文错误\nerror tail", new UTF8Encoding(false));
+            using var worker = await StartSshWorkerAsync();
+            var target = new SshTarget(SshConfig.DefaultPath, "prod-host", sshLogPath);
+            Check(SshTarget.TryParseUri(target.DisplayPath, out var parsedTarget) && parsedTarget.Host == "prod-host" && parsedTarget.Path == sshLogPath, "SSH URI round-trip");
+            using var remoteDoc = new SshLogDocument(target, worker);
+            await remoteDoc.OpenAsync(LogTextEncoding.Utf8, default);
+            using var remoteSession = new LogSession(remoteDoc);
+            Check(!remoteSession.HasSourcePage(1, 5), "remote page starts uncached");
+            await remoteSession.FetchSourcePageAsync(1, 50, default);
+            Check(remoteSession.HasSourcePage(1, 5) && remoteSession.GetSourceLineText(4) == "中文错误", "remote source page fetch and cache");
+            Check(await remoteSession.SearchAsync("in(error,warning);notin(retry)", false, false, default) == 2 &&
+                remoteSession.MatchCount == 2 && remoteSession.GetResultLineText(0) == "ERROR first", "remote advanced search and hydrated results");
+            await File.AppendAllTextAsync(sshLogPath, " retry\nERROR appended\n", new UTF8Encoding(false));
+            var remoteAppended = await remoteSession.RefreshAsync(default);
+            Check(remoteAppended.HasNewContent && !remoteSession.HasSourcePage(1, 6) &&
+                remoteSession.MatchCount == 2 && remoteSession.TotalMatchCount == 2 && remoteSession.MatchLine(1) == 6, "remote live tail refresh");
+            var remoteExport = Path.Combine(directory, "remote-export.txt");
+            await remoteSession.ExportAsync(remoteExport, default);
+            Check((await File.ReadAllTextAsync(remoteExport)).Contains("6\tERROR appended"), "remote export uses hydrated matches");
+            Console.WriteLine("PASS: search, Unicode/GBK, SSH worker/session, progress, cancellation, incremental tail, safe export, settings and truncation.");
             return 0;
         }
         catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
@@ -123,12 +144,54 @@ internal static class SelfTest
                         Enumerable.Range(0, bitmap.Height).Any(y => bitmap.GetPixel(x, y).A > 0)), "transparent icon contains visible strokes");
                 }
             }
-            Check(Field<ToolStripButton>(viewer, "_regex").Text == ".*" && Field<ToolStripButton>(viewer, "_case").Text == "Aa",
-                "search option symbols match original LOGRAM");
+            Check(Field<ToolStripButton>(viewer, "_regex").Text == ".*" && Field<ToolStripButton>(viewer, "_case").Text == "Aa" &&
+                Field<ToolStripButton>(viewer, "_ssh").Text == "SSH" && Field<ToolStripButton>(viewer, "_ssh").Enabled,
+                "search option symbols and SSH button match original LOGRAM");
             Pump(viewer.OpenFileAsync(first, LogTextEncoding.Gbk));
             Check(Field<LogSession>(viewer, "_current").Document.EncodingKind == LogTextEncoding.Gbk, "host encoding changes cached document");
             Pump(viewer.OpenFileAsync(first, LogTextEncoding.Utf8));
             Check(Field<LogSession>(viewer, "_current").Document.EncodingKind == LogTextEncoding.Utf8 && query.Text == "error", "encoding switch preserves query");
+
+            var sshSample = CreateFile(directory, "sample.log", "INFO one\nERROR remote\n中文 tail\n");
+            CreateFile(directory, "sample-extra.log", "INFO two\n");
+            using var remoteWorker = PumpResult(StartSshWorkerAsync());
+            var remoteDoc = new SshLogDocument(new SshTarget(SshConfig.DefaultPath, "linux-prod", sshSample), remoteWorker);
+            Pump(remoteDoc.OpenAsync(LogTextEncoding.Utf8, default));
+            _ = viewer.Handle;
+            Pump(viewer.OpenRemoteDocumentAsync(remoteDoc));
+            Application.DoEvents();
+            Check(parent.SshTabPayload == $"{remoteDoc.FilePath}\tsample.log (linux-prod)", "viewer notifies NPP host to create SSH tab");
+            Check(Field<LogSession>(viewer, "_current").GetSourceLineText(2) == "ERROR remote", "viewer prefetches remote source page");
+            query.Text = "error";
+            Pump((Task)Call(viewer, "SearchAsync")!);
+            Check(Field<LogSession>(viewer, "_current").MatchCount == 1 && Field<LogSession>(viewer, "_current").GetResultLineText(0) == "ERROR remote", "UI remote search");
+            Call(viewer, "DocumentStatus");
+            Check(Field<ToolStripStatusLabel>(viewer, "_status").Text!.Contains("linux-prod"), "status bar shows remote host and memory");
+
+            using (var sshDialog = new SshOpenForm(parent.Handle, dark: true) { StartPosition = FormStartPosition.Manual, Location = new Point(-20000, -20000), ShowInTaskbar = false })
+            {
+                sshDialog.Show();
+                using var browser = PumpResult(StartSshWorkerAsync());
+                typeof(SshOpenForm).GetField("_session", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(sshDialog, browser);
+                Field<ComboBox>(sshDialog, "_hosts").Text = "linux-prod";
+                typeof(SshOpenForm).GetField("_connectedHost", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(sshDialog, "linux-prod");
+                Pump((Task)Call(sshDialog, "BrowseAsync", directory, false)!);
+                var files = Field<ListBox>(sshDialog, "_files");
+                var pathInput = Field<TextBox>(sshDialog, "_path");
+                Check(files.Items.Count >= 2, "SSH browser populated");
+                pathInput.Text = Path.Combine(directory, "missing");
+                pathInput.Text = Path.Combine(directory, "sam");
+                var wait = Stopwatch.StartNew();
+                while (Field<object?>(sshDialog, "_browseCts") is not null && wait.Elapsed < TimeSpan.FromSeconds(8)) { Application.DoEvents(); Thread.Sleep(15); }
+                Check(files.Items.Count == 2 && pathInput.Text == Path.Combine(directory, "sam") && files.SelectedIndex == -1, "live prefix filtering keeps typed text without auto-selecting");
+                files.SelectedIndex = 1;
+                Application.DoEvents();
+                Check(pathInput.Text == sshSample, "selecting remote file fills path");
+                sshDialog.Close();
+                Check(!browser.IsConnected, "closing SSH dialog disposes unused worker");
+            }
+            Call(viewer, "CloseSession", 2);
+            Check(!remoteWorker.IsConnected, "closing SSH session releases remote worker");
             var message = new Message();
             Check((bool)Call(viewer, "ProcessCmdKey", message, Keys.Control | Keys.O)!, "open shortcut is handled");
             Application.DoEvents();
@@ -152,6 +215,12 @@ internal static class SelfTest
         finally { Directory.Delete(directory, recursive: true); }
     }
 
+    private static Task<SshSession> StartSshWorkerAsync()
+    {
+        var start = new ProcessStartInfo("python");
+        foreach (var argument in new[] { "-u", "-c", SshSession.Bootstrap }) start.ArgumentList.Add(argument);
+        return SshSession.StartAsync(start, default);
+    }
     private static T Field<T>(object owner, string name) => (T)owner.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner)!;
     private static object? Call(object owner, string name, params object[] arguments) =>
         owner.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(owner, arguments);
@@ -162,14 +231,26 @@ internal static class SelfTest
         Check(task.IsCompleted, "UI operation timed out");
         task.GetAwaiter().GetResult();
     }
+    private static T PumpResult<T>(Task<T> task)
+    {
+        Pump(task);
+        return task.GetAwaiter().GetResult();
+    }
     private sealed class ShortcutReceiver : Form
     {
         internal bool ReturnRequested;
         internal int HostCommand;
+        internal string? SshTabPayload;
         protected override void WndProc(ref Message message)
         {
             if (message.Msg == Native.HideMessage) ReturnRequested = true;
             if (message.Msg == Native.CommandMessage) HostCommand = message.WParam.ToInt32();
+            if (message.Msg == Native.CopyDataMessage)
+            {
+                var data = System.Runtime.InteropServices.Marshal.PtrToStructure<Native.CopyDataStruct>(message.LParam);
+                if (data.dwData == (IntPtr)1 && data.lpData != IntPtr.Zero && data.cbData > 0)
+                    SshTabPayload = System.Runtime.InteropServices.Marshal.PtrToStringUni(data.lpData, data.cbData / sizeof(char));
+            }
             base.WndProc(ref message);
         }
     }

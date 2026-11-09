@@ -18,6 +18,13 @@ namespace LogRAM
 
             try
             {
+                if (e.Args is ["--ssh-ui-self-test", var outputPath])
+                {
+                    ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                    Shutdown(await SshUiSelfTest.RunAsync(Path.GetFullPath(outputPath)));
+                    return;
+                }
+
                 if (CliRunner.IsCliInvocation(e.Args))
                 {
                     var exitCode = await CliRunner.RunAsync(e.Args);

@@ -2,9 +2,10 @@
   <PropertyGroup>
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
-    <Version>1.3.0</Version>
+    <Version>1.4.0</Version>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../LogRAM/Localization.cs" Link="Localization.cs" />
     <Compile Include="../LogRAM/LogFileDocument.cs" Link="LogFileDocument.cs" />
     <Compile Include="../LogRAM/LogQuery.cs" Link="LogQuery.cs" />
     <Compile Include="../LogRAM/AdvancedSearchQuery.cs" Link="AdvancedSearchQuery.cs" />
@@ -14,6 +15,10 @@
     <Compile Include="../LogRAM/LogSearchProgress.cs" Link="LogSearchProgress.cs" />
     <Compile Include="../LogRAM/LogSearchSummary.cs" Link="LogSearchSummary.cs" />
     <Compile Include="../LogRAM/LogTextEncoding.cs" Link="LogTextEncoding.cs" />
+    <Compile Include="../LogRAM/SshConfig.cs" Link="SshConfig.cs" />
+    <Compile Include="../LogRAM/SshSession.cs" Link="SshSession.cs" />
+    <Compile Include="../LogRAM/SshLogDocument.cs" Link="SshLogDocument.cs" />
+    <EmbeddedResource Include="../LogRAM/Remote/ssh_agent.py" LogicalName="LogRAM.ssh_agent.py" />
     <InternalsVisibleTo Include="LogRAM" />
     <InternalsVisibleTo Include="LogRAM.Npp.Viewer" />
     <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />

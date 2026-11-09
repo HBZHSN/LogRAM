@@ -18,11 +18,13 @@ public static class CliRunner
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool AttachConsole(int dwProcessId);
 
-    public static bool IsCliInvocation(string[] args) => CliOptions.LooksLikeCli(args);
+    public static bool IsCliInvocation(string[] args) => args is ["--ssh-self-test"] || CliOptions.LooksLikeCli(args);
 
     public static async Task<int> RunAsync(string[] args)
     {
         AttachToConsole();
+
+        if (args is ["--ssh-self-test"]) return await SshSelfTest.RunAsync();
 
         if (!CliOptions.TryParse(args, out var options, out var error))
         {

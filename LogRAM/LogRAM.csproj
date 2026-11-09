@@ -10,13 +10,13 @@
     <UseWPF>true</UseWPF>
     <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
     <Nullable>enable</Nullable>
-    <Version>1.3.0</Version>
+    <Version>1.4.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
     <Manifest Include="$(ApplicationManifest)" />
     <ProjectReference Include="../LogRAM.Core/LogRAM.Core.csproj" />
-    <Compile Remove="LogFileDocument.cs;LogQuery.cs;AdvancedSearchQuery.cs;LogLine.cs;LogPage.cs;LogSearchResult.cs;LogSearchProgress.cs;LogSearchSummary.cs;LogTextEncoding.cs" />
+    <Compile Remove="Localization.cs;LogFileDocument.cs;LogQuery.cs;AdvancedSearchQuery.cs;LogLine.cs;LogPage.cs;LogSearchResult.cs;LogSearchProgress.cs;LogSearchSummary.cs;LogTextEncoding.cs;SshConfig.cs;SshSession.cs;SshLogDocument.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -2,7 +2,7 @@
 
 只读大日志查看插件，复用 LogRAM 的内存、字节级 SIMD、多核搜索引擎。
 
-当前发布版本：**1.3.4**。[下载发行包](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.3.4) · [项目首页](../README.md) · [验证记录](VALIDATION.md)
+当前发布版本：**1.4.0**。[下载发行包](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.4.0) · [项目首页](../README.md) · [验证记录](VALIDATION.md)
 
 需要 Notepad++ **8.9.8.1 或更高版本**。提供 x64 / x86 自包含包；数 GB 日志建议使用 x64。已提交 [官方插件列表 PR #1220](https://github.com/notepad-plus-plus/nppPluginList/pull/1220)，审核并发布列表前可手动安装。
 
@@ -26,7 +26,7 @@ Notepad++/
 该快捷键可在 NPP 的 Shortcut Mapper 中修改，LogRAM 控件内也会使用修改后的快捷键。
 LogRAM 模式使用整个编辑工作区：上方原文、下方结果，中间分隔条可拖动，操作逻辑与独立 GUI 一致。
 搜索框位于下方结果区顶部；搜索、取消、选项、导出、刷新、实时、行号跳转、上一 / 下一结果在同一行。顶部文件工具栏已移除。
-工具栏按搜索、搜索选项、刷新 / 实时、行号跳转、结果导航 / 导出分为五组，用竖线分隔。常用操作采用图标，正则与大小写使用原版的 `.*` / `Aa`；悬停显示操作说明及快捷键，启用的选项保持高亮。
+工具栏按搜索、搜索选项、刷新 / 实时 / SSH、行号跳转、结果导航 / 导出分为五组，用竖线分隔。常用操作采用图标，正则、大小写与远程日志使用 `.*` / `Aa` / `SSH`；悬停显示操作说明及快捷键，启用的选项保持高亮。
 普通 NPP 编辑区暂时隐藏；通过 NPP 插件菜单或 `Ctrl+Alt+L` 返回，原文件、修改和编辑内容都保留。全部 LogRAM 查看控件只读。
 点击 `.log` 文件标签自动显示该日志的 LogRAM 界面；点击其他文件或新建普通文件，自动恢复普通编辑区。LogRAM 的已打开日志与搜索缓存仍保留。
 关闭 NPP 的日志标签也会释放对应的 LogRAM 文件缓存。
@@ -35,10 +35,12 @@ LogRAM 模式使用整个编辑工作区：上方原文、下方结果，中间�
 `.log` 正文直接由 LogRAM 后台加载，NPP 标签只持有简短的只读提示，不重复加载正文。已接管日志的写入受保护，不能将占位内容保存回源文件。
 NPP 恢复的未保存日志快照继续保留在普通编辑区；不会用磁盘内容替换其中的修改。
 **Plugins → LogRAM → Open log...** 也调用 NPP 的标准打开对话框；其他类型文件可通过 Open current saved file 查看。
+**Plugins → LogRAM → Open SSH log...** 或工具栏 **SSH** 可读取 `%USERPROFILE%\.ssh\config`（含 `Include` 明确别名）连接远程 Linux 主机，支持路径实时前缀筛选并在 NPP 中生成对应的只读远程标签（`文件名 (主机)`），标签切换、关闭与 UTF-8 / GB2312 编码切换与本地日志一致。
 
 ## 功能
 
-- 使用 NPP 文件标签、最近文件与关闭文件功能；关闭日志标签释放缓存。
+- 使用 NPP 文件标签、最近文件与关闭文件功能；关闭日志标签释放本地缓存或远程 SSH 会话。
+- 支持通过系统 `ssh.exe` + 远程 Python 3.7+ 内存只读工作进程浏览和搜索 Linux 远程日志，不下载完整日志；远程内存预留可用量的 20% 或 64 MiB（取较大值），每次搜索最多回传 1000 条 / 约 1 MiB，单行最多 16 KiB。
 - 编码使用 NPP 菜单：UTF-8 / UTF-8 BOM，或 Character sets → Chinese → GB2312（GBK）。仅改变读取编码，不转换或修改源文件。
 - 普通搜索、正则、大小写选项、`in(error,warning);notin(retry)` 组合查询。
 - 搜索进度、取消、逐批显示已返回结果、结果导航、点击结果显示原文上下文。
@@ -74,7 +76,7 @@ NPP 恢复的未保存日志快照继续保留在普通编辑区；不会用磁�
 .\scripts\install-npp.ps1 -NotepadDirectory 'C:\Program Files\Notepad++'
 ```
 
-输出 `LogRAM.Npp/bin/package-x64/LogRAM.Npp-1.3.4-x64.zip`。
+输出 `LogRAM.Npp/bin/package-x64/LogRAM.Npp-1.4.0-x64.zip`。
 `-Architecture x86` / `arm64` 使用对应的 Visual Studio 编译工具和 .NET 运行时。
 `-FrameworkDependent` 输出到独立的 `package-x64-fd` 目录，不包含运行时，需要目标机器安装对应架构的 .NET 8 Desktop Runtime。
 
