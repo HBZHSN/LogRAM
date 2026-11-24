@@ -77,6 +77,20 @@ public sealed partial class MainWindow : Window
         public bool CaseSensitive { get; set; }
         public bool UseRegex { get; set; }
         public string SearchStatus { get; set; } = string.Empty;
+        public List<LogSearchResult> PinnedResults { get; } = new();
+        public HashSet<long> PinnedLineNumbers { get; } = new();
+        public List<LogSearchResult> SecondarySearchResults { get; } = new();
+        public string SecondarySearchQuery { get; set; } = string.Empty;
+        public RightPaneTab ActiveRightPaneTab { get; set; } = RightPaneTab.Pinned;
+        public int PinnedTopIndex { get; set; }
+        public int SecondaryTopIndex { get; set; }
+        public bool IsResultFindOpen { get; set; }
+        public string ResultFindQuery { get; set; } = string.Empty;
+        public bool ResultFindCaseSensitive { get; set; }
+        public List<int> ResultFindMatches { get; } = new();
+        public int CurrentResultFindIndex { get; set; } = -1;
+        public double SideMaxContentWidth { get; set; }
+        public bool SideReserveHScroll { get; set; }
 
         public void ReleaseDocument()
         {
@@ -112,6 +126,10 @@ public sealed partial class MainWindow : Window
             SearchResults.Clear();
             SearchResultLineNumbers.Clear();
             SearchResultsByLineNumber.Clear();
+            PinnedResults.Clear();
+            PinnedLineNumbers.Clear();
+            SecondarySearchResults.Clear();
+            ResultFindMatches.Clear();
         }
     }
 
@@ -233,6 +251,7 @@ public sealed partial class MainWindow : Window
 
         _inactiveMemoryReleaseTimer.Tick += InactiveMemoryReleaseTimer_Tick;
         _liveRefreshTimer.Tick += LiveRefreshTimer_Tick;
+        InitializeSearchPane();
         UpdateMemoryStatus();
     }
 
@@ -415,6 +434,7 @@ public sealed partial class MainWindow : Window
         _currentTab.CaseSensitive = CaseSensitiveButton.IsChecked == true;
         _currentTab.UseRegex = RegexButton.IsChecked == true;
         _currentTab.SearchStatus = SearchStatusTextBlock.Text;
+        SaveSearchPaneTabState(_currentTab);
     }
 
     private void SelectDocumentTab(DocumentTab? tab)
@@ -505,6 +525,7 @@ public sealed partial class MainWindow : Window
         }
 
         UpdateLiveRefreshText();
+        LoadSearchPaneTabState(tab);
         UpdateControlState();
     }
 
@@ -573,6 +594,11 @@ public sealed partial class MainWindow : Window
         if (_isRestoringAfterInactivity)
         {
             e.Handled = true;
+            return;
+        }
+
+        if (HandleSearchPaneKeyDown(e))
+        {
             return;
         }
 
@@ -859,6 +885,19 @@ public sealed partial class MainWindow : Window
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         var textBox = new TextBox { Text = text };
+        textBox.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter)
+            {
+                e.Handled = true;
+                AdvancedSearchRun_Click(textBox, new RoutedEventArgs());
+            }
+            else if (e.Key == Key.Escape)
+            {
+                e.Handled = true;
+                AdvancedSearchPopup.IsOpen = false;
+            }
+        };
         Grid.SetColumn(textBox, 0);
 
         var removeButton = new Button
@@ -1046,6 +1085,8 @@ public sealed partial class MainWindow : Window
             UpdateInactiveMemoryReleaseOptions();
             UpdateVersionText();
         }
+
+        ApplySearchPaneLanguage();
 
         RefreshStatusTexts();
     }
@@ -1278,6 +1319,7 @@ public sealed partial class MainWindow : Window
         }
 
         UpdateLogHighlight();
+        ApplySearchPaneEditorFont();
     }
 
     private void RootGrid_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -1926,6 +1968,7 @@ public sealed partial class MainWindow : Window
         _memoryStatusTimer.Stop();
         _inactiveMemoryReleaseTimer.Stop();
         _liveRefreshTimer.Stop();
+        DisposeSearchPaneTimers();
         _pageCts?.Cancel();
         _searchCts?.Cancel();
         _searchCts?.Dispose();
@@ -2006,6 +2049,7 @@ public sealed partial class MainWindow : Window
                 UpdateDocumentStatus();
             }
 
+            RefreshLiveTailPinnedLine(firstChangedLine);
             await RefreshLiveSearchResultsAsync(firstChangedLine);
             SearchResultStatusTextBlock.Text = FormatSearchResultCount(_searchResults.Count);
         }
@@ -2100,6 +2144,7 @@ public sealed partial class MainWindow : Window
         UpdateThemeToggleText();
 
         ApplyNativeTitleBarTheme();
+        ApplySearchPaneTheme();
     }
 
     private void UpdateThemeToggleText()
@@ -2202,6 +2247,8 @@ public sealed partial class MainWindow : Window
             {
                 _currentTab.Document = newDocument;
             }
+
+            OnDocumentReloaded(newDocument);
 
             if (newDocument is LogFileDocument) SaveRecentFile(filePath);
 
@@ -2317,6 +2364,7 @@ public sealed partial class MainWindow : Window
         _searchCts = searchCts;
         _isSearching = true;
         ClearSearchResults();
+        ResetSecondarySearchForNewSearch();
         _activeSearchCriteria = null;
         ResetSearchHorizontalScroll();
         ClearSearchTextBoxes();
@@ -2388,6 +2436,7 @@ public sealed partial class MainWindow : Window
             searchCts.Dispose();
             _isSearching = false;
             SearchProgressBar.Visibility = Visibility.Collapsed;
+            OnPrimarySearchCompleted();
             UpdateControlState();
         }
     }
@@ -2456,6 +2505,10 @@ public sealed partial class MainWindow : Window
                 UpdateSearchScrollAvailability();
                 UpdateSearchScrollThumb();
                 SearchResultStatusTextBlock.Text = FormatSearchResultCount(searchResults.Count);
+                if (followWhenAtEnd)
+                {
+                    RefreshResultFindAfterLiveBatch();
+                }
                 UpdateControlState();
             }
         }, DispatcherPriority.Background);
@@ -2528,6 +2581,8 @@ public sealed partial class MainWindow : Window
 
         SearchLineNumberBox.Text = numbers.ToString();
         SearchContentBox.Text = content.ToString();
+        ScheduleSearchPinMarkers();
+        ScheduleSearchFindHighlight();
         ScheduleSearchHorizontalScrollState();
     }
 
@@ -2562,9 +2617,10 @@ public sealed partial class MainWindow : Window
             Brushes.Black,
             dpi.PixelsPerDip);
 
-        var width = new GridLength(Math.Ceiling(formatted.WidthIncludingTrailingWhitespace + 11));
+        var width = new GridLength(Math.Ceiling(formatted.WidthIncludingTrailingWhitespace + 16));
         LogLineNumberColumn.Width = width;
         SearchLineNumberColumn.Width = width;
+        SideLineNumberColumn.Width = width;
     }
 
     private void ClearSearchTextBoxes()
@@ -2572,6 +2628,8 @@ public sealed partial class MainWindow : Window
         _searchTopIndex = 0;
         SearchLineNumberBox.Clear();
         SearchContentBox.Clear();
+        SearchPinMarkersCanvas.Children.Clear();
+        SearchFindHighlightBar.Visibility = Visibility.Collapsed;
         UpdateSearchScrollAvailability();
         UpdateSearchScrollThumb();
     }

@@ -559,7 +559,6 @@
                             </Grid.ColumnDefinitions>
                             <TextBox x:Name="SearchTextBox"
                                      Grid.Column="0"
-                                     Padding="3,3,7,3"
                                      VerticalAlignment="Center"
                                      KeyDown="SearchTextBox_KeyDown"
                                      ToolTip="搜索文本或正则" />
@@ -599,65 +598,302 @@
                     </Grid>
                 </Border>
 
-                <Grid x:Name="SearchGrid"
-                      Grid.Row="1"
-                      PreviewMouseWheel="SearchGrid_PreviewMouseWheel">
+                <Grid x:Name="SearchResultsHostGrid" Grid.Row="1">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="18" />
+                        <ColumnDefinition x:Name="SearchLeftColumn" Width="*" MinWidth="180" />
+                        <ColumnDefinition x:Name="SearchRightSplitterColumn" Width="0" />
+                        <ColumnDefinition x:Name="SearchRightColumn" Width="0" />
                     </Grid.ColumnDefinitions>
 
-                    <Grid Grid.Column="0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition x:Name="SearchLineNumberColumn" Width="94" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <Border Grid.Column="0"
-                                BorderBrush="{DynamicResource BorderBrush}"
-                                BorderThickness="0,0,1,0">
-                            <TextBox x:Name="SearchLineNumberBox"
-                                     Style="{StaticResource LineNumberBoxStyle}"
-                                     Foreground="{DynamicResource WarningBrush}" />
+                    <Grid x:Name="SearchLeftHost" Grid.Column="0">
+                        <Grid x:Name="SearchGrid"
+                              PreviewMouseWheel="SearchGrid_PreviewMouseWheel">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="18" />
+                            </Grid.ColumnDefinitions>
+
+                            <Grid Grid.Column="0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition x:Name="SearchLineNumberColumn" Width="94" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border x:Name="SearchFindHighlightBar"
+                                        Grid.Column="0"
+                                        Grid.ColumnSpan="2"
+                                        VerticalAlignment="Top"
+                                        Visibility="Collapsed"
+                                        IsHitTestVisible="False"
+                                        Background="{DynamicResource SelectionBackBrush}"
+                                        Opacity="0.28" />
+                                <Border x:Name="SearchLineNumberBorder"
+                                        Grid.Column="0"
+                                        Background="{DynamicResource LineNumberBackBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}"
+                                        BorderThickness="0,0,1,0"
+                                        Cursor="Hand"
+                                        ToolTip="点击行号固定或取消固定该行"
+                                        MouseLeftButtonDown="SearchLineNumberBorder_MouseLeftButtonDown">
+                                    <Grid>
+                                        <Canvas x:Name="SearchPinMarkersCanvas"
+                                                IsHitTestVisible="False"
+                                                ClipToBounds="True" />
+                                        <TextBox x:Name="SearchLineNumberBox"
+                                                 Style="{StaticResource LineNumberBoxStyle}"
+                                                 Background="Transparent"
+                                                 Foreground="{DynamicResource WarningBrush}" />
+                                    </Grid>
+                                </Border>
+                                <TextBox x:Name="SearchContentBox"
+                                         Grid.Column="1"
+                                         Style="{StaticResource LogContentBoxStyle}"
+                                         VerticalScrollBarVisibility="Disabled"
+                                         HorizontalScrollBarVisibility="Auto"
+                                         SizeChanged="SearchContentBox_SizeChanged"
+                                         PreviewMouseLeftButtonUp="SearchContentBox_PreviewMouseLeftButtonUp"
+                                         ContextMenuOpening="SearchContentBox_ContextMenuOpening">
+                                    <TextBox.ContextMenu>
+                                        <ContextMenu>
+                                            <MenuItem x:Name="SearchPinMenuItem" Header="固定此行" Click="SearchPinMenuItem_Click" />
+                                            <Separator Background="{DynamicResource BorderBrush}" />
+                                            <MenuItem x:Name="SearchCopyMenuItem" Header="复制" Command="Copy" />
+                                            <MenuItem x:Name="SearchSelectAllMenuItem" Header="全选" Command="SelectAll" />
+                                        </ContextMenu>
+                                    </TextBox.ContextMenu>
+                                </TextBox>
+                            </Grid>
+
+                            <Border x:Name="SearchScrollTrack"
+                                    Grid.Column="1"
+                                    Background="{DynamicResource ScrollTrackBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1,0,0,0"
+                                    MouseLeftButtonDown="SearchScrollTrack_MouseLeftButtonDown"
+                                    MouseMove="SearchScrollTrack_MouseMove"
+                                    MouseLeftButtonUp="SearchScrollTrack_MouseLeftButtonUp"
+                                    LostMouseCapture="SearchScrollTrack_LostMouseCapture"
+                                    SizeChanged="SearchScrollTrack_SizeChanged">
+                                <Border x:Name="SearchScrollThumb"
+                                        Width="12"
+                                        MinHeight="24"
+                                        Height="48"
+                                        Background="{DynamicResource ScrollThumbBrush}"
+                                        BorderBrush="{DynamicResource ScrollThumbBorderBrush}"
+                                        BorderThickness="1"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Top">
+                                    <Border.RenderTransform>
+                                        <TranslateTransform x:Name="SearchScrollThumbTransform" />
+                                    </Border.RenderTransform>
+                                </Border>
+                            </Border>
+                        </Grid>
+
+                        <Border x:Name="ResultFindBar"
+                                Panel.ZIndex="20"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Top"
+                                Margin="6,3,22,0"
+                                Padding="4,2"
+                                Background="{DynamicResource PanelBackBrush}"
+                                BorderBrush="{DynamicResource StrongBorderBrush}"
+                                BorderThickness="1"
+                                Visibility="Collapsed">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBox x:Name="ResultFindTextBox"
+                                         Width="136"
+                                         Height="22"
+                                         FontSize="12"
+                                         VerticalAlignment="Center"
+                                         TextChanged="ResultFindTextBox_TextChanged"
+                                         PreviewKeyDown="ResultFindTextBox_PreviewKeyDown" />
+                                <ToggleButton x:Name="ResultFindCaseButton"
+                                              Width="26"
+                                              Height="22"
+                                              MinWidth="26"
+                                              Padding="0"
+                                              Margin="4,0,0,0"
+                                              Content="Aa"
+                                              FontSize="11"
+                                              Checked="ResultFindCaseButton_Changed"
+                                              Unchecked="ResultFindCaseButton_Changed" />
+                                <TextBlock x:Name="ResultFindCountTextBlock"
+                                           MinWidth="46"
+                                           Margin="5,0,4,0"
+                                           TextAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource MutedTextBrush}" />
+                                <Button x:Name="ResultFindPrevButton"
+                                        Width="22"
+                                        Height="22"
+                                        MinWidth="22"
+                                        Padding="0"
+                                        Margin="0,0,2,0"
+                                        Content="↑"
+                                        Click="ResultFindPrevButton_Click" />
+                                <Button x:Name="ResultFindNextButton"
+                                        Width="22"
+                                        Height="22"
+                                        MinWidth="22"
+                                        Padding="0"
+                                        Margin="0,0,4,0"
+                                        Content="↓"
+                                        Click="ResultFindNextButton_Click" />
+                                <Button x:Name="ResultFindAllButton"
+                                        Height="22"
+                                        MinWidth="36"
+                                        Padding="6,0"
+                                        Margin="0,0,4,0"
+                                        FontSize="11"
+                                        Content="全部"
+                                        Click="ResultFindAllButton_Click" />
+                                <Button x:Name="ResultFindCloseButton"
+                                        Width="22"
+                                        Height="22"
+                                        MinWidth="22"
+                                        Padding="0"
+                                        Content="×"
+                                        Click="ResultFindCloseButton_Click" />
+                            </StackPanel>
                         </Border>
-                        <TextBox x:Name="SearchContentBox"
-                                 Grid.Column="1"
-                                 Style="{StaticResource LogContentBoxStyle}"
-                                 VerticalScrollBarVisibility="Disabled"
-                                 HorizontalScrollBarVisibility="Auto"
-                                 SizeChanged="SearchContentBox_SizeChanged"
-                                 PreviewMouseLeftButtonUp="SearchContentBox_PreviewMouseLeftButtonUp">
-                            <TextBox.ContextMenu>
-                                <ContextMenu>
-                                    <MenuItem x:Name="SearchCopyMenuItem" Header="复制" Command="Copy" />
-                                    <MenuItem x:Name="SearchSelectAllMenuItem" Header="全选" Command="SelectAll" />
-                                </ContextMenu>
-                            </TextBox.ContextMenu>
-                        </TextBox>
                     </Grid>
 
-                    <Border x:Name="SearchScrollTrack"
-                            Grid.Column="1"
-                            Background="{DynamicResource ScrollTrackBrush}"
-                            BorderBrush="{DynamicResource BorderBrush}"
-                            BorderThickness="1,0,0,0"
-                            MouseLeftButtonDown="SearchScrollTrack_MouseLeftButtonDown"
-                            MouseMove="SearchScrollTrack_MouseMove"
-                            MouseLeftButtonUp="SearchScrollTrack_MouseLeftButtonUp"
-                            LostMouseCapture="SearchScrollTrack_LostMouseCapture"
-                            SizeChanged="SearchScrollTrack_SizeChanged">
-                        <Border x:Name="SearchScrollThumb"
-                                Width="12"
-                                MinHeight="24"
-                                Height="48"
-                                Background="{DynamicResource ScrollThumbBrush}"
-                                BorderBrush="{DynamicResource ScrollThumbBorderBrush}"
-                                BorderThickness="1"
-                                HorizontalAlignment="Center"
-                                VerticalAlignment="Top">
-                            <Border.RenderTransform>
-                                <TranslateTransform x:Name="SearchScrollThumbTransform" />
-                            </Border.RenderTransform>
-                        </Border>
+                    <GridSplitter x:Name="SearchRightSplitter"
+                                  Grid.Column="1"
+                                  Width="5"
+                                  HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Stretch"
+                                  Background="{DynamicResource PanelAltBackBrush}"
+                                  BorderBrush="{DynamicResource BorderBrush}"
+                                  BorderThickness="1,0"
+                                  Cursor="SizeWE"
+                                  ResizeDirection="Columns"
+                                  ResizeBehavior="PreviousAndNext"
+                                  Visibility="Collapsed"
+                                  DragCompleted="SearchRightSplitter_DragCompleted" />
+
+                    <Border x:Name="SearchRightPane"
+                            Grid.Column="2"
+                            Background="{DynamicResource LogBackBrush}"
+                            Visibility="Collapsed">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="28" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <Border Grid.Row="0"
+                                    Background="{DynamicResource PanelBackBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="0,0,0,1"
+                                    Padding="4,2">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <ToggleButton x:Name="PinnedTabButton"
+                                                      Height="22"
+                                                      MinWidth="54"
+                                                      Padding="8,0"
+                                                      Margin="0,0,4,0"
+                                                      FontSize="11"
+                                                      Click="PinnedTabButton_Click" />
+                                        <ToggleButton x:Name="SecondarySearchTabButton"
+                                                      Height="22"
+                                                      MinWidth="68"
+                                                      Padding="8,0"
+                                                      FontSize="11"
+                                                      Click="SecondarySearchTabButton_Click" />
+                                    </StackPanel>
+                                    <Button x:Name="ClearRightPaneButton"
+                                            Grid.Column="1"
+                                            Height="22"
+                                            MinWidth="42"
+                                            Padding="6,0"
+                                            FontSize="11"
+                                            Content="清空"
+                                            Click="ClearRightPaneButton_Click" />
+                                </Grid>
+                            </Border>
+
+                            <Grid x:Name="SideResultsGrid"
+                                  Grid.Row="1"
+                                  PreviewMouseWheel="SideResultsGrid_PreviewMouseWheel">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="18" />
+                                </Grid.ColumnDefinitions>
+
+                                <Grid Grid.Column="0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition x:Name="SideLineNumberColumn" Width="94" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border x:Name="SideLineNumberBorder"
+                                            Grid.Column="0"
+                                            Background="{DynamicResource LineNumberBackBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}"
+                                            BorderThickness="0,0,1,0"
+                                            Cursor="Hand"
+                                            MouseLeftButtonDown="SideLineNumberBorder_MouseLeftButtonDown">
+                                        <Grid>
+                                            <Canvas x:Name="SidePinMarkersCanvas"
+                                                    IsHitTestVisible="False"
+                                                    ClipToBounds="True" />
+                                            <TextBox x:Name="SideLineNumberBox"
+                                                     Style="{StaticResource LineNumberBoxStyle}"
+                                                     Background="Transparent"
+                                                     Foreground="{DynamicResource AccentBrush}" />
+                                        </Grid>
+                                    </Border>
+                                    <TextBox x:Name="SideContentBox"
+                                             Grid.Column="1"
+                                             Style="{StaticResource LogContentBoxStyle}"
+                                             VerticalScrollBarVisibility="Disabled"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             SizeChanged="SideContentBox_SizeChanged"
+                                             PreviewMouseLeftButtonUp="SideContentBox_PreviewMouseLeftButtonUp"
+                                             ContextMenuOpening="SideContentBox_ContextMenuOpening">
+                                        <TextBox.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem x:Name="SidePinMenuItem" Header="取消固定" Click="SidePinMenuItem_Click" />
+                                                <Separator Background="{DynamicResource BorderBrush}" />
+                                                <MenuItem x:Name="SideCopyMenuItem" Header="复制" Command="Copy" />
+                                                <MenuItem x:Name="SideSelectAllMenuItem" Header="全选" Command="SelectAll" />
+                                            </ContextMenu>
+                                        </TextBox.ContextMenu>
+                                    </TextBox>
+                                </Grid>
+
+                                <Border x:Name="SideScrollTrack"
+                                        Grid.Column="1"
+                                        Background="{DynamicResource ScrollTrackBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}"
+                                        BorderThickness="1,0,0,0"
+                                        MouseLeftButtonDown="SideScrollTrack_MouseLeftButtonDown"
+                                        MouseMove="SideScrollTrack_MouseMove"
+                                        MouseLeftButtonUp="SideScrollTrack_MouseLeftButtonUp"
+                                        LostMouseCapture="SideScrollTrack_LostMouseCapture"
+                                        SizeChanged="SideScrollTrack_SizeChanged">
+                                    <Border x:Name="SideScrollThumb"
+                                            Width="12"
+                                            MinHeight="24"
+                                            Height="48"
+                                            Background="{DynamicResource ScrollThumbBrush}"
+                                            BorderBrush="{DynamicResource ScrollThumbBorderBrush}"
+                                            BorderThickness="1"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Top">
+                                        <Border.RenderTransform>
+                                            <TranslateTransform x:Name="SideScrollThumbTransform" />
+                                        </Border.RenderTransform>
+                                    </Border>
+                                </Border>
+                            </Grid>
+                        </Grid>
                     </Border>
                 </Grid>
             </Grid>

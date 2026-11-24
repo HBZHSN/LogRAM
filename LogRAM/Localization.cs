@@ -177,6 +177,27 @@ public sealed class LocalizedStrings
         ? $"LogRAM {extension} log file"
         : $"LogRAM {extension} 日志文件";
 
+    public string AdvancedButtonShort => T("高级", "Adv");
+    public string PinLineMenu => T("固定此行", "Pin line");
+    public string UnpinLineMenu => T("取消固定", "Unpin line");
+    public string PinLineNumberTip => T("点击行号固定或取消固定该行", "Click line number to pin or unpin");
+    public string UnpinLineNumberTip => T("点击行号取消固定该行", "Click line number to unpin");
+    public string PinnedTab(int count) => _en ? $"Pinned ({count:n0})" : $"固定 ({count:n0})";
+    public string SecondarySearchTab(int count) => _en ? $"Find ({count:n0})" : $"二次搜索 ({count:n0})";
+    public string ClearButton => T("清空", "Clear");
+    public string ClearPinnedTip => T("清空所有固定行", "Clear all pinned lines");
+    public string ClearSecondaryTip => T("清空二次搜索结果", "Clear secondary search results");
+    public string ResultFindPlaceholder => T("在搜索结果中查找", "Find in results");
+    public string ResultFindPrevTip => T("上一个匹配（Shift+Enter）", "Previous match (Shift+Enter)");
+    public string ResultFindNextTip => T("下一个匹配（Enter）", "Next match (Enter)");
+    public string ResultFindAllButton => T("全部", "All");
+    public string ResultFindAllTip => T("在右侧显示全部匹配行", "Show all matches in right pane");
+    public string ResultFindCloseTip => T("关闭查找（Esc）", "Close find (Esc)");
+    public string ResultFindNoMatches => T("无结果", "No results");
+    public string ResultFindMatchCount(int current, int total) => total == 0
+        ? ResultFindNoMatches
+        : $"{current:n0}/{total:n0}";
+
     public string DescribeMemoryLimit(string max) => _en
         ? $"The log file exceeds the current available memory limit (about {max})."
         : $"日志文件超过了当前可用内存上限（约 {max}）。";
