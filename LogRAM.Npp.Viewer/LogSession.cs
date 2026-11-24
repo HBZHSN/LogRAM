@@ -2,12 +2,24 @@ using System.Text;
 
 namespace LogRAM.Npp;
 
+internal enum SidePaneTab
+{
+    Pinned,
+    SecondarySearch
+}
+
+internal readonly record struct PinnedResultLine(long LineNumber, string Text);
+
 internal sealed class LogSession(ILogDocument document) : IDisposable
 {
     private readonly object _resultLock = new();
     private readonly List<long> _matches = new();
     private readonly Dictionary<long, string> _remoteResultTexts = new();
     private readonly Dictionary<long, string> _pageLines = new();
+    private readonly List<PinnedResultLine> _pinned = new();
+    private readonly HashSet<long> _pinnedLines = new();
+    private readonly List<PinnedResultLine> _secondary = new();
+    private readonly List<int> _resultFindMatches = new();
     private long _cachedPageStart, _cachedPageLastLine;
     private int _cachedPageMaxLines;
     internal ILogDocument Document { get; } = document;
@@ -15,6 +27,14 @@ internal sealed class LogSession(ILogDocument document) : IDisposable
     internal SshLogDocument? RemoteDocument => Document as SshLogDocument;
     internal long SourceTop { get; set; } = 1;
     internal int ResultsTop { get; set; }
+    internal int PinnedTop { get; set; }
+    internal int SecondaryTop { get; set; }
+    internal SidePaneTab ActiveSideTab { get; set; } = SidePaneTab.Pinned;
+    internal string SecondaryQuery { get; private set; } = "";
+    internal bool IsResultFindOpen { get; set; }
+    internal string ResultFindQuery { get; set; } = "";
+    internal bool ResultFindCaseSensitive { get; set; }
+    internal int CurrentResultFindIndex { get; set; } = -1;
     internal string QueryText { get; set; } = "";
     internal bool Regex { get; set; }
     internal bool CaseSensitive { get; set; }
@@ -26,6 +46,148 @@ internal sealed class LogSession(ILogDocument document) : IDisposable
     internal int MatchCount { get { lock (_resultLock) return _matches.Count; } }
     internal long TotalMatchCount { get; private set; }
     internal long MatchLine(int index) { lock (_resultLock) return _matches[index]; }
+    internal int PinnedCount => _pinned.Count;
+    internal int SecondaryCount => _secondary.Count;
+    internal int ResultFindMatchCount => _resultFindMatches.Count;
+    internal int ResultFindMatchAt(int index) => _resultFindMatches[index];
+    internal PinnedResultLine PinnedAt(int index) => _pinned[index];
+    internal PinnedResultLine SecondaryAt(int index) => _secondary[index];
+    internal bool IsPinned(long lineNumber) => _pinnedLines.Contains(lineNumber);
+
+    internal bool TogglePin(long lineNumber, string? text = null)
+    {
+        if (_pinnedLines.Remove(lineNumber))
+        {
+            for (var i = 0; i < _pinned.Count; i++)
+            {
+                if (_pinned[i].LineNumber == lineNumber)
+                {
+                    _pinned.RemoveAt(i);
+                    break;
+                }
+            }
+            return false;
+        }
+
+        string resolvedText;
+        if (text is not null)
+        {
+            resolvedText = text;
+        }
+        else if (Document is LogFileDocument local)
+        {
+            resolvedText = local.GetLineText(lineNumber);
+        }
+        else
+        {
+            lock (_resultLock)
+                resolvedText = _remoteResultTexts.TryGetValue(lineNumber, out var rt) ? rt : _pageLines.GetValueOrDefault(lineNumber, "");
+        }
+
+        _pinnedLines.Add(lineNumber);
+        var insertAt = 0;
+        while (insertAt < _pinned.Count && _pinned[insertAt].LineNumber < lineNumber) insertAt++;
+        _pinned.Insert(insertAt, new PinnedResultLine(lineNumber, resolvedText));
+        return true;
+    }
+
+    internal void ClearPinned()
+    {
+        _pinned.Clear();
+        _pinnedLines.Clear();
+        PinnedTop = 0;
+    }
+
+    internal void ClearSecondary()
+    {
+        _secondary.Clear();
+        SecondaryQuery = "";
+        SecondaryTop = 0;
+    }
+
+    internal void CopyPinnedFrom(LogSession previous)
+    {
+        _pinned.Clear();
+        _pinnedLines.Clear();
+        var local = Document as LogFileDocument;
+        foreach (var item in previous._pinned)
+        {
+            if (item.LineNumber > Document.LineCount) continue;
+            var text = local is not null ? local.GetLineText(item.LineNumber) : item.Text;
+            _pinnedLines.Add(item.LineNumber);
+            _pinned.Add(new PinnedResultLine(item.LineNumber, text));
+        }
+        PinnedTop = previous.PinnedTop;
+        ActiveSideTab = SidePaneTab.Pinned;
+    }
+
+    internal int UpdateResultFindMatches(string query, bool caseSensitive, int preferredResultIndex = -1)
+    {
+        ResultFindQuery = query;
+        ResultFindCaseSensitive = caseSensitive;
+        _resultFindMatches.Clear();
+        CurrentResultFindIndex = -1;
+        if (string.IsNullOrEmpty(query)) return 0;
+
+        long[] lines;
+        lock (_resultLock) lines = _matches.ToArray();
+        if (lines.Length == 0) return 0;
+
+        if (Document is LogFileDocument local)
+        {
+            var matcher = local.CreateLineTextMatcher(query, caseSensitive);
+            for (var i = 0; i < lines.Length; i++)
+            {
+                if (matcher.Matches(local, lines[i])) _resultFindMatches.Add(i);
+            }
+        }
+        else
+        {
+            var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+            lock (_resultLock)
+            {
+                for (var i = 0; i < lines.Length; i++)
+                {
+                    if (_remoteResultTexts.TryGetValue(lines[i], out var text) && text.Contains(query, comparison))
+                        _resultFindMatches.Add(i);
+                }
+            }
+        }
+
+        if (_resultFindMatches.Count == 0) return 0;
+
+        var chosen = -1;
+        if (preferredResultIndex >= 0)
+        {
+            chosen = _resultFindMatches.BinarySearch(preferredResultIndex);
+            if (chosen < 0) chosen = -1;
+        }
+        if (chosen < 0)
+        {
+            chosen = 0;
+            for (var i = 0; i < _resultFindMatches.Count; i++)
+            {
+                if (_resultFindMatches[i] >= ResultsTop) { chosen = i; break; }
+            }
+        }
+        CurrentResultFindIndex = chosen;
+        return _resultFindMatches.Count;
+    }
+
+    internal int CommitSecondarySearchAll()
+    {
+        _secondary.Clear();
+        var count = MatchCount;
+        foreach (var idx in _resultFindMatches)
+        {
+            if (idx >= 0 && idx < count)
+                _secondary.Add(new PinnedResultLine(MatchLine(idx), GetResultLineText(idx)));
+        }
+        SecondaryQuery = ResultFindQuery;
+        SecondaryTop = 0;
+        if (_secondary.Count > 0) ActiveSideTab = SidePaneTab.SecondarySearch;
+        return _secondary.Count;
+    }
 
     internal bool HasSourcePage(long startLine, int rowCount)
     {
@@ -73,6 +235,9 @@ internal sealed class LogSession(ILogDocument document) : IDisposable
             ? new LogQuery { IncludeAny = advanced.Includes, Exclude = advanced.Excludes, CaseSensitive = caseSensitive }
             : new LogQuery { Pattern = text, UseRegex = regex, CaseSensitive = caseSensitive };
         lock (_resultLock) { _matches.Clear(); _remoteResultTexts.Clear(); }
+        _resultFindMatches.Clear();
+        CurrentResultFindIndex = -1;
+        ClearSecondary();
         TotalMatchCount = 0;
         ResultsTop = 0;
         QueryText = text;
@@ -142,7 +307,23 @@ internal sealed class LogSession(ILogDocument document) : IDisposable
                 }
             }
         }
-        if (appended.IsTruncated || _activeQuery is null || (!appended.HasNewContent && !HasPendingRefresh)) return appended;
+        if (appended.IsTruncated) return appended;
+        if (appended.HasNewContent && Document is LogFileDocument localTail)
+        {
+            var changedLine = Math.Max(1, appended.OldLineCount);
+            if (_pinnedLines.Contains(changedLine))
+            {
+                for (var i = 0; i < _pinned.Count; i++)
+                {
+                    if (_pinned[i].LineNumber == changedLine)
+                    {
+                        _pinned[i] = new PinnedResultLine(changedLine, localTail.GetLineText(changedLine));
+                        break;
+                    }
+                }
+            }
+        }
+        if (_activeQuery is null || (!appended.HasNewContent && !HasPendingRefresh)) return appended;
         var first = _pendingRefreshFrom ?? Math.Max(1, appended.OldLineCount);
         _pendingRefreshFrom = first;
         lock (_resultLock)

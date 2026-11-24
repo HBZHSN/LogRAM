@@ -2,7 +2,7 @@ using System.Diagnostics;
 
 namespace LogRAM.Npp;
 
-internal sealed class ViewerForm : Form
+internal sealed partial class ViewerForm : Form
 {
     private readonly IntPtr _parent;
     private readonly int _owner;
@@ -49,13 +49,13 @@ internal sealed class ViewerForm : Form
         Size = new Size(900, 650);
         _query.Items.AddRange(_settings.SearchHistory.Cast<object>().ToArray());
         _queryBar.Items.AddRange(new ToolStripItem[] { _query, _search, _cancel, new ToolStripSeparator(),
-            _regex, _case, new ToolStripSeparator(), _refresh, _live, _ssh, new ToolStripSeparator(),
+            _regex, _case, _advanced, new ToolStripSeparator(), _refresh, _live, _ssh, new ToolStripSeparator(),
             _lineLabel, _line, _go, new ToolStripSeparator(), _previous, _next, _export });
         _statusBar.Items.AddRange(new ToolStripItem[] { _status, _count, _progress });
+        InitializeSearchPaneControls();
         _split.Panel1.Controls.Add(_source);
         _split.Panel1.Controls.Add(_sourceScroll);
-        _split.Panel2.Controls.Add(_results);
-        _split.Panel2.Controls.Add(_resultsScroll);
+        _split.Panel2.Controls.Add(_resultsSplit);
         _split.Panel2.Controls.Add(_queryBar);
         Controls.Add(_split);
         Controls.Add(_statusBar);
@@ -78,11 +78,11 @@ internal sealed class ViewerForm : Form
         _results.CellValueNeeded += (_, e) => FillCell(e, true);
         _source.CellFormatting += (_, e) =>
         {
-            if (_current is not null && _current.MatchCount > 0 && _selectedMatch >= 0 && _selectedMatch < _current.MatchCount &&
-                _current.SourceTop + e.RowIndex == _current.MatchLine(_selectedMatch))
+            if (_current is not null && _highlightedSourceLine > 0 &&
+                _current.SourceTop + e.RowIndex == _highlightedSourceLine)
                 e.CellStyle!.BackColor = _dark ? Color.FromArgb(75, 65, 20) : Color.FromArgb(255, 245, 185);
         };
-        _results.CellClick += (_, e) => { if (e.RowIndex >= 0) ShowMatch((_current?.ResultsTop ?? 0) + e.RowIndex); };
+        _results.CellClick += (_, e) => HandleResultsCellClick(e);
         _sourceScroll.Scroll += (_, _) => { if (!_updating && _current is not null) { _current.SourceTop = _sourceScroll.Value + 1L; UpdatePages(); } };
         _resultsScroll.Scroll += (_, _) => { if (!_updating && _current is not null) { _current.ResultsTop = _resultsScroll.Value; UpdatePages(); } };
         _source.MouseWheel += (_, e) => ScrollPage(false, -Math.Sign(e.Delta) * 3);
@@ -236,6 +236,7 @@ internal sealed class ViewerForm : Form
                 session.Regex = _sessions[existing].Regex;
                 session.CaseSensitive = _sessions[existing].CaseSensitive;
                 session.Live = _sessions[existing].Live;
+                session.CopyPinnedFrom(_sessions[existing]);
                 _sessions[existing].Dispose();
                 _sessions[existing] = session;
                 _current = null;
@@ -302,12 +303,15 @@ internal sealed class ViewerForm : Form
         }
         _current = index >= 0 && index < _sessions.Count ? _sessions[index] : null;
         _selectedMatch = -1;
+        _highlightedSourceLine = -1;
         _updating = true;
         _query.Text = _current?.QueryText ?? "";
         _regex.Checked = _current?.Regex ?? false;
         _case.Checked = _current?.CaseSensitive ?? false;
         _live.Checked = _current?.Live ?? false;
         _updating = false;
+        SyncResultFindBarFromSession();
+        UpdateSidePane();
         UpdatePages();
         SetBusy(_busy);
         DocumentStatus();
@@ -344,6 +348,7 @@ internal sealed class ViewerForm : Form
             if (_closing) { document.Dispose(); return; }
             var replacement = new LogSession(document) { SourceTop = session.SourceTop, QueryText = session.QueryText, Regex = session.Regex,
                 CaseSensitive = session.CaseSensitive, Live = session.Live };
+            replacement.CopyPinnedFrom(session);
             if (replacement.IsRemote)
             {
                 await replacement.FetchSourcePageAsync(replacement.SourceTop, Math.Max(VisibleRows(_source) * 2, 100), token);
@@ -366,6 +371,7 @@ internal sealed class ViewerForm : Form
         {
             SetTransientStatus(T("正在搜索…", "Searching…"));
             _selectedMatch = -1;
+            _highlightedSourceLine = -1;
             var watch = Stopwatch.StartNew();
             var count = await session.SearchAsync(_query.Text, _regex.Checked, _case.Checked, token,
                 new Progress<LogSearchProgress>(value => UpdateProgress(value.BytesRead, value.TotalBytes)));
@@ -376,7 +382,12 @@ internal sealed class ViewerForm : Form
             _query.Text = session.QueryText;
             _settings.Save(_settingsPath);
             SetTransientStatus(T($"匹配 {count:N0} 行，用时 {watch.Elapsed.TotalSeconds:F2} 秒", $"{count:N0} matches in {watch.Elapsed.TotalSeconds:F2}s"));
+            UpdateSidePane();
             UpdatePages();
+            if (session.IsResultFindOpen && !string.IsNullOrEmpty(session.ResultFindQuery))
+                ExecuteResultFind(navigateToSource: false);
+            else
+                UpdateResultFindUi();
             if (session.MatchCount > 0) ShowMatch(0);
         });
     }
@@ -425,7 +436,7 @@ internal sealed class ViewerForm : Form
         _busy = busy;
         _ssh.Enabled = !busy && !_dialogOpen;
         _refresh.Enabled = _live.Enabled = _search.Enabled = _query.Enabled =
-            _regex.Enabled = _case.Enabled = !busy && _current is not null;
+            _regex.Enabled = _case.Enabled = _advanced.Enabled = !busy && !_dialogOpen && _current is not null;
         _export.Enabled = !busy && (_current?.MatchCount ?? 0) > 0;
         _cancel.Enabled = busy;
         _progress.Visible = busy;
@@ -461,6 +472,7 @@ internal sealed class ViewerForm : Form
         _results.Invalidate();
         ResizeTextColumn(_source, false);
         ResizeTextColumn(_results, true);
+        UpdateSidePage();
         _count.Text = totalMatches > matches
             ? T($"{lineCount:N0} 行 | 已回传 {matches:N0} / {totalMatches:N0} 条结果", $"{lineCount:N0} lines | {matches:N0} / {totalMatches:N0} matches")
             : T($"{lineCount:N0} 行 | {matches:N0} 条结果", $"{lineCount:N0} lines | {matches:N0} matches");
@@ -540,6 +552,7 @@ internal sealed class ViewerForm : Form
         if (_current is null || index < 0 || index >= _current.MatchCount) return;
         _selectedMatch = index;
         var line = _current.MatchLine(index);
+        _highlightedSourceLine = line;
         _current.SourceTop = Math.Max(1, line - VisibleRows(_source) / 2);
         if (index < _current.ResultsTop || index >= _current.ResultsTop + VisibleRows(_results)) _current.ResultsTop = index;
         _line.Text = line.ToString();
@@ -566,6 +579,7 @@ internal sealed class ViewerForm : Form
             ShowError(T("请输入日志范围内的行号。", "Enter a line number within this log."));
             return;
         }
+        _highlightedSourceLine = line;
         _current.SourceTop = line;
         UpdatePages();
         var row = (int)(line - _current.SourceTop);
@@ -583,18 +597,38 @@ internal sealed class ViewerForm : Form
         }
         switch (keyData)
         {
-            case Keys.Control | Keys.F: _query.Focus(); return true;
+            case Keys.Control | Keys.F:
+                if (IsFocusInResultsArea()) OpenResultFindBar();
+                else { _query.Focus(); _query.SelectAll(); }
+                return true;
             case Keys.Control | Keys.G: _line.Focus(); _line.SelectAll(); return true;
             case Keys.Control | Keys.O: Native.PostMessage(_parent, Native.CommandMessage, (IntPtr)41002, IntPtr.Zero); return true;
             case Keys.Control | Keys.W: Native.PostMessage(_parent, Native.CommandMessage, (IntPtr)41003, IntPtr.Zero); return true;
             case Keys.Control | Keys.N: Native.PostMessage(_parent, Native.CommandMessage, (IntPtr)41001, IntPtr.Zero); return true;
             case Keys.Control | Keys.Tab: Native.PostMessage(_parent, Native.CommandMessage, (IntPtr)44095, IntPtr.Zero); return true;
             case Keys.Control | Keys.Shift | Keys.Tab: Native.PostMessage(_parent, Native.CommandMessage, (IntPtr)44096, IntPtr.Zero); return true;
-            case Keys.F3: NavigateMatch(1); return true;
-            case Keys.Shift | Keys.F3: NavigateMatch(-1); return true;
-            case Keys.Escape: _operation?.Cancel(); return true;
+            case Keys.F3:
+                if (_current?.IsResultFindOpen == true && _current.ResultFindMatchCount > 0 && IsFocusInResultsArea())
+                    NavigateResultFind(1);
+                else
+                    NavigateMatch(1);
+                return true;
+            case Keys.Shift | Keys.F3:
+                if (_current?.IsResultFindOpen == true && _current.ResultFindMatchCount > 0 && IsFocusInResultsArea())
+                    NavigateResultFind(-1);
+                else
+                    NavigateMatch(-1);
+                return true;
+            case Keys.Escape:
+                if (_current?.IsResultFindOpen == true && IsFocusInResultsArea())
+                    CloseResultFindBar();
+                else
+                    _operation?.Cancel();
+                return true;
             case Keys.PageDown when _source.Focused || _results.Focused: ScrollPage(_results.Focused, VisibleRows(_results.Focused ? _results : _source)); return true;
             case Keys.PageUp when _source.Focused || _results.Focused: ScrollPage(_results.Focused, -VisibleRows(_results.Focused ? _results : _source)); return true;
+            case Keys.PageDown when _sideGrid.Focused: ScrollSidePage(VisibleRows(_sideGrid)); return true;
+            case Keys.PageUp when _sideGrid.Focused: ScrollSidePage(-VisibleRows(_sideGrid)); return true;
         }
         return base.ProcessCmdKey(ref msg, keyData);
     }
@@ -782,6 +816,7 @@ internal sealed class ViewerForm : Form
         _line.AccessibleName = _line.TextBox.AccessibleName = T("跳转行号", "Go to line number");
         _source.AccessibleName = T("日志原文", "Source log");
         _results.AccessibleName = T("搜索结果列表", "Search result list");
+        TranslateSearchPane();
         ResizeQuery();
         DocumentStatus();
     }
@@ -792,7 +827,7 @@ internal sealed class ViewerForm : Form
         var back = dark ? Color.FromArgb(30, 30, 30) : SystemColors.Window;
         var fore = dark ? Color.Gainsboro : SystemColors.WindowText;
         BackColor = back;
-        foreach (var grid in new[] { _source, _results })
+        foreach (var grid in new[] { _source, _results, _sideGrid })
         {
             grid.BackgroundColor = back;
             grid.BackColor = back;
@@ -818,6 +853,7 @@ internal sealed class ViewerForm : Form
         _line.BackColor = back; _line.ForeColor = fore;
         _split.BackColor = dark ? Color.FromArgb(55, 55, 55) : SystemColors.Control;
         _split.Panel1.BackColor = _split.Panel2.BackColor = back;
+        ApplySearchPaneTheme(dark);
         UpdateToolbarIcons();
         _source.Refresh(); _results.Refresh();
         Invalidate(true);
@@ -839,6 +875,7 @@ internal sealed class ViewerForm : Form
         if (disposing)
         {
             _timer.Dispose();
+            DisposeSearchPaneResources();
             _closingCts.Dispose();
             foreach (ToolStripItem item in _queryBar.Items) item.Image?.Dispose();
             // shortcut: an active operation owns its document until process exit; do not dispose while its search threads run.
