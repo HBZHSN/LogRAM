@@ -12,7 +12,7 @@
 
 LogRAM 将日志完整加载到内存，并使用字节级搜索、SIMD、多核并行和虚拟化渲染处理大文件。它适合查看普通文本编辑器难以打开的数 GB 日志，提供独立 GUI、Notepad++ 插件、命令行工具和 MCP 服务四种使用方式，共用同一搜索引擎。
 
-最新发布：[LogRAM 1.4.0](https://github.com/HBZHSN/LogRAM/releases/tag/1.4.0) 与 [Notepad++ 插件 1.4.0](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.4.0)。
+最新发布：[LogRAM 1.5.0](https://github.com/HBZHSN/LogRAM/releases/tag/1.5.0) 与 [Notepad++ 插件 1.5.0](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.5.0)。
 
 | 使用方式 | 适合的场景 | 入口 |
 | --- | --- | --- |
@@ -35,7 +35,7 @@ LogRAM 将日志完整加载到内存，并使用字节级搜索、SIMD、多核
 - 打开并搜索大型日志文件；独立 GUI 在加载前检查可用内存。
 - 多标签页浏览，并将资源管理器中再次打开的文件转交给现有窗口。
 - 支持纯文本、正则表达式、区分大小写和包含/排除组合搜索。
-- 搜索结果流式显示，可取消、跳转到原文并导出。
+- 搜索结果流式显示，支持点击行号固定关键行至右侧（跨搜索保留并按行号排序）、结果区内 `Ctrl+F` 二次查找与右侧双标签切换，以及跳转到原文与导出。
 - 支持刷新文件和实时读取追加内容。
 - 支持 UTF-8 和 GBK 编码。
 - 独立 GUI 与 Notepad++ 插件均可通过 SSH 浏览 Linux 远程日志；索引、搜索和刷新在远程执行，只回传当前页和有限的匹配内容。
@@ -55,22 +55,22 @@ LogRAM 会把每个已打开文件完整加载到内存，因此多标签页的�
 
 ## 安装与下载
 
-Notepad++ 插件当前版本为 **1.4.0**，包内包含 .NET 8 运行时：
+Notepad++ 插件当前版本为 **1.5.0**，包内包含 .NET 8 运行时：
 
 | 文件 | 下载 | 安装方式 |
 | --- | --- | --- |
-| `LogRAM.Npp-1.4.0-x64.zip` | [x64 下载](https://github.com/HBZHSN/LogRAM/releases/download/npp-1.4.0/LogRAM.Npp-1.4.0-x64.zip) | 手动安装，数 GB 日志建议选择 x64 |
-| `LogRAM.Npp-1.4.0-x86.zip` | [x86 下载](https://github.com/HBZHSN/LogRAM/releases/download/npp-1.4.0/LogRAM.Npp-1.4.0-x86.zip) | 用于 32 位 NPP |
-| `*-plugin-admin.zip` | [发行页](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.4.0) | Plugins Admin 专用结构；手动使用时解压到 `plugins/LogRAM.Npp/` |
+| `LogRAM.Npp-1.5.0-x64.zip` | [x64 下载](https://github.com/HBZHSN/LogRAM/releases/download/npp-1.5.0/LogRAM.Npp-1.5.0-x64.zip) | 手动安装，数 GB 日志建议选择 x64 |
+| `LogRAM.Npp-1.5.0-x86.zip` | [x86 下载](https://github.com/HBZHSN/LogRAM/releases/download/npp-1.5.0/LogRAM.Npp-1.5.0-x86.zip) | 用于 32 位 NPP |
+| `*-plugin-admin.zip` | [发行页](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.5.0) | Plugins Admin 专用结构；手动使用时解压到 `plugins/LogRAM.Npp/` |
 
-独立 GUI、CLI 和 MCP 当前发行版本为 **1.4.0**：
+独立 GUI、CLI 和 MCP 当前发行版本为 **1.5.0**：
 
 | 文件 | 运行环境 | 适用场景 |
 | --- | --- | --- |
-| [LogRAM-win-x64.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.4.0/LogRAM-win-x64.exe) | 已包含 .NET 运行时 | 推荐，大多数电脑下载后可直接运行 |
-| [LogRAM-win-x64-fd.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.4.0/LogRAM-win-x64-fd.exe) | 需要 [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) | 文件更小 |
-| [LogRAM-cli.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.4.0/LogRAM-cli.exe) | 自包含发行包 | 命令行查询与批处理 |
-| [LogRAM-mcp.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.4.0/LogRAM-mcp.exe) | 自包含发行包 | stdio MCP 客户端集成 |
+| [LogRAM-win-x64.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.5.0/LogRAM-win-x64.exe) | 已包含 .NET 运行时 | 推荐，大多数电脑下载后可直接运行 |
+| [LogRAM-win-x64-fd.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.5.0/LogRAM-win-x64-fd.exe) | 需要 [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) | 文件更小 |
+| [LogRAM-cli.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.5.0/LogRAM-cli.exe) | 自包含发行包 | 命令行查询与批处理 |
+| [LogRAM-mcp.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.5.0/LogRAM-mcp.exe) | 自包含发行包 | stdio MCP 客户端集成 |
 
 LogRAM 是免安装的单文件程序，下载后直接运行即可。
 

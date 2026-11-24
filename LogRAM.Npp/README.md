@@ -2,9 +2,9 @@
 
 只读大日志查看插件，复用 LogRAM 的内存、字节级 SIMD、多核搜索引擎。
 
-当前发布版本：**1.4.0**。[下载发行包](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.4.0) · [项目首页](../README.md) · [验证记录](VALIDATION.md)
+当前发布版本：**1.5.0**。[下载发行包](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.5.0) · [项目首页](../README.md) · [验证记录](VALIDATION.md)
 
-需要 Notepad++ **8.9.8.1 或更高版本**。提供 x64 / x86 自包含包；数 GB 日志建议使用 x64。已提交 [官方插件列表 PR #1220](https://github.com/notepad-plus-plus/nppPluginList/pull/1220)，审核并发布列表前可手动安装。
+需要 Notepad++ **8.9.8.1 或更高版本**。提供 x64 / x86 自包含包；数 GB 日志建议使用 x64。已合入官方插件列表（[PR #1220](https://github.com/notepad-plus-plus/nppPluginList/pull/1220)），1.5.0 更新在列表同步前也可手动安装。
 
 ## 安装
 
@@ -42,7 +42,8 @@ NPP 恢复的未保存日志快照继续保留在普通编辑区；不会用磁�
 - 使用 NPP 文件标签、最近文件与关闭文件功能；关闭日志标签释放本地缓存或远程 SSH 会话。
 - 支持通过系统 `ssh.exe` + 远程 Python 3.7+ 内存只读工作进程浏览和搜索 Linux 远程日志，不下载完整日志；远程内存预留可用量的 20% 或 64 MiB（取较大值），每次搜索最多回传 1000 条 / 约 1 MiB，单行最多 16 KiB。
 - 编码使用 NPP 菜单：UTF-8 / UTF-8 BOM，或 Character sets → Chinese → GB2312（GBK）。仅改变读取编码，不转换或修改源文件。
-- 普通搜索、正则、大小写选项、`in(error,warning);notin(retry)` 组合查询。
+- 普通搜索、正则、大小写选项、高级包含/排除弹窗（`in(error,warning);notin(retry)`）。
+- 点击搜索结果行号固定关键行至右侧栏（按行号升序持久保留）；结果区内 `Ctrl+F` 弹出浮动二次查找，支持上下切换与点击「全部」在右侧双标签页查看。
 - 搜索进度、取消、逐批显示已返回结果、结果导航、点击结果显示原文上下文。
 - 按行号跳转、可复制的只读文本、UTF-8 结果导出（行号 + Tab + 原文）。
 - 刷新、当前文件实时追加与末尾跟随。追加时只查询可能变化的最后一行和新行。
@@ -76,7 +77,7 @@ NPP 恢复的未保存日志快照继续保留在普通编辑区；不会用磁�
 .\scripts\install-npp.ps1 -NotepadDirectory 'C:\Program Files\Notepad++'
 ```
 
-输出 `LogRAM.Npp/bin/package-x64/LogRAM.Npp-1.4.0-x64.zip`。
+输出 `LogRAM.Npp/bin/package-x64/LogRAM.Npp-1.5.0-x64.zip`。
 `-Architecture x86` / `arm64` 使用对应的 Visual Studio 编译工具和 .NET 运行时。
 `-FrameworkDependent` 输出到独立的 `package-x64-fd` 目录，不包含运行时，需要目标机器安装对应架构的 .NET 8 Desktop Runtime。
 

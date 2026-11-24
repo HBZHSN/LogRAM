@@ -12,7 +12,7 @@ A large-file log viewer and search tool for Windows.
 
 LogRAM loads logs fully into memory and uses byte-level search, SIMD, multi-core processing, and virtualized rendering to handle large files. It is designed for multi-gigabyte logs that ordinary text editors struggle to open. The standalone GUI, Notepad++ plugin, command-line tool, and MCP server share the same search engine.
 
-Latest releases: [LogRAM 1.4.0](https://github.com/HBZHSN/LogRAM/releases/tag/1.4.0) and [Notepad++ plugin 1.4.0](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.4.0).
+Latest releases: [LogRAM 1.5.0](https://github.com/HBZHSN/LogRAM/releases/tag/1.5.0) and [Notepad++ plugin 1.5.0](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.5.0).
 
 | Mode | Use case | Start here |
 | --- | --- | --- |
@@ -35,7 +35,7 @@ The 1.4.0 project baseline is available in Chinese. [Product](docs/PRODUCT.md) Â
 - Open and search large log files; the standalone GUI checks available memory before loading.
 - Browse multiple files in tabs; files opened again from Explorer are forwarded to the existing window.
 - Search with plain text, regular expressions, case sensitivity, and include/exclude conditions.
-- Stream and cancel search results, jump to the source line, and export results.
+- Stream and cancel search results, pin result lines to the right pane in chronological line order across searches, run secondary `Ctrl+F` find inside results with dual right-pane tabs, jump to the source line, and export results.
 - Refresh files manually or follow appended content in real time.
 - Read UTF-8 and GBK files.
 - Browse and search remote Linux logs over SSH in both the standalone GUI and the Notepad++ plugin; indexing, search, and live refresh run remotely without downloading full logs.
@@ -55,22 +55,22 @@ Each open file is loaded fully into memory, so memory use accumulates across tab
 
 ## Installation and Downloads
 
-The current **Notepad++ plugin version is 1.4.0**. Its packages include the .NET 8 runtime:
+The current **Notepad++ plugin version is 1.5.0**. Its packages include the .NET 8 runtime:
 
 | File | Download | Installation |
 | --- | --- | --- |
-| `LogRAM.Npp-1.4.0-x64.zip` | [Download x64](https://github.com/HBZHSN/LogRAM/releases/download/npp-1.4.0/LogRAM.Npp-1.4.0-x64.zip) | Manual installation; recommended for multi-GB logs |
-| `LogRAM.Npp-1.4.0-x86.zip` | [Download x86](https://github.com/HBZHSN/LogRAM/releases/download/npp-1.4.0/LogRAM.Npp-1.4.0-x86.zip) | For 32-bit NPP |
-| `*-plugin-admin.zip` | [Release page](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.4.0) | Plugins Admin layout; for manual use, extract into `plugins/LogRAM.Npp/` |
+| `LogRAM.Npp-1.5.0-x64.zip` | [Download x64](https://github.com/HBZHSN/LogRAM/releases/download/npp-1.5.0/LogRAM.Npp-1.5.0-x64.zip) | Manual installation; recommended for multi-GB logs |
+| `LogRAM.Npp-1.5.0-x86.zip` | [Download x86](https://github.com/HBZHSN/LogRAM/releases/download/npp-1.5.0/LogRAM.Npp-1.5.0-x86.zip) | For 32-bit NPP |
+| `*-plugin-admin.zip` | [Release page](https://github.com/HBZHSN/LogRAM/releases/tag/npp-1.5.0) | Plugins Admin layout; for manual use, extract into `plugins/LogRAM.Npp/` |
 
-The current standalone GUI, CLI, and MCP release is **1.4.0**:
+The current standalone GUI, CLI, and MCP release is **1.5.0**:
 
 | File | Runtime | Recommended for |
 | --- | --- | --- |
-| [LogRAM-win-x64.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.4.0/LogRAM-win-x64.exe) | .NET runtime included | Most users; runs directly after download |
-| [LogRAM-win-x64-fd.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.4.0/LogRAM-win-x64-fd.exe) | Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) | A smaller download |
-| [LogRAM-cli.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.4.0/LogRAM-cli.exe) | Self-contained package | Terminal queries and batch processing |
-| [LogRAM-mcp.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.4.0/LogRAM-mcp.exe) | Self-contained package | stdio MCP integration |
+| [LogRAM-win-x64.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.5.0/LogRAM-win-x64.exe) | .NET runtime included | Most users; runs directly after download |
+| [LogRAM-win-x64-fd.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.5.0/LogRAM-win-x64-fd.exe) | Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) | A smaller download |
+| [LogRAM-cli.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.5.0/LogRAM-cli.exe) | Self-contained package | Terminal queries and batch processing |
+| [LogRAM-mcp.exe](https://github.com/HBZHSN/LogRAM/releases/download/1.5.0/LogRAM-mcp.exe) | Self-contained package | stdio MCP integration |
 
 LogRAM is a portable single-file application and does not require installation.
 

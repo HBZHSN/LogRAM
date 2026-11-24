@@ -57,5 +57,6 @@
 | `dotnet run --project LogRAM.Npp.Viewer/LogRAM.Npp.Viewer.csproj -c Release --no-build -- --ui-self-test` | 通过（含工具栏 5 组/8 图标、高级搜索对话框、固定、`Ctrl+F` 查找、右侧双 Tab 与会话隔离）。 |
 | `dotnet run --project LogRAM-mcp/LogRAM-mcp.csproj -c Release --no-build -- --self-test` | 通过。 |
 | `LogRAM.exe --ssh-ui-self-test <tmp>` | 通过（含输入框首字符偏移断言、高级搜索、固定、浮动查找、双 Tab 及深浅色/820px 截图核验）。 |
+| `scripts/test-npp.ps1`（便携版 NPP 8.9.8.1 x64 `-AutoLog` / x86 `-AutoLog -Dark`） | 均从 `1.5.0-*-plugin-admin.zip` 解压后通过实机加载、自动接管、编码菜单、搜索、实时追加、跳转、多标签、导出、缩放、重启与退出检查。 |
 
-- 待验证项：真实 Notepad++ 便携宿主端到端联调与真实 OpenSSH 远程主机联调本次未执行，按 [复验步骤](TEST_STYLE.md#界面与真实环境) 安排。
+- 待验证项：真实远程 OpenSSH 主机端到端联调本次未执行，按 [复验步骤](TEST_STYLE.md#界面与真实环境) 安排。
