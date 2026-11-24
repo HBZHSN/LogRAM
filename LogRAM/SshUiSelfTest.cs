@@ -2,10 +2,12 @@ using System;
 using System.Collections;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
@@ -57,6 +59,111 @@ internal static class SshUiSelfTest
             Check(Get<Button>(window, "SshButton").IsEnabled, "SSH control remains enabled at minimum width");
             Check(Math.Abs(memoryLabel.TranslatePoint(new Point(memoryLabel.ActualWidth / 2, 0), root).X - root.ActualWidth / 2) <= 1, "remote memory uses the same centered display at minimum width");
             Snapshot(window, Path.Combine(outputPath, "ssh-client-narrow.png"));
+
+            // Verify Requirement 1 (TextBox leading whitespace fix), Requirement 2 (case-insensitive advanced search),
+            // Requirement 3 (line-number pinning to right pane), and Requirement 4 (Ctrl+F in-results find + All + tab switching).
+            window.Width = 1100;
+            window.UpdateLayout();
+            var localLogPath = Path.Combine(outputPath, "advanced-pin-find.log");
+            await File.WriteAllTextAsync(localLogPath,
+                "INFO 100 service started\n" +
+                "ERROR 404 resource missing\n" +
+                "WARN 200 ok retry\n" +
+                "error 404 gateway timeout\n" +
+                "INFO 500 downstream failed\n");
+            await (Task)Call(window, "OpenOrSelectTabAsync", localLogPath, null!)!;
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+
+            // Req 1: check TextBox character 0 X offset inside AdvancedSearchPopup & SearchTextBox (no doubled padding)
+            var themeEnum = typeof(MainWindow).GetNestedType("AppTheme", BindingFlags.NonPublic)!;
+            var originalTheme = Get<object>(window, "_currentTheme");
+            Call(window, "ApplyTheme", Enum.Parse(themeEnum, "Dark"));
+            var searchBox = Get<TextBox>(window, "SearchTextBox");
+            searchBox.Text = "in(error,500);notin(200)";
+            window.UpdateLayout();
+            var searchChar0 = searchBox.GetRectFromCharacterIndex(0);
+            Check(!searchChar0.IsEmpty && searchChar0.Left <= 8.5, $"SearchTextBox leading inset too large: {searchChar0.Left:F1}");
+
+            var advPopup = Get<Popup>(window, "AdvancedSearchPopup");
+            advPopup.IsOpen = true;
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+            var includePanel = Get<StackPanel>(window, "AdvancedIncludePanel");
+            var firstAdvBox = includePanel.Children.OfType<Grid>().First().Children.OfType<TextBox>().First();
+            firstAdvBox.UpdateLayout();
+            var advChar0 = firstAdvBox.GetRectFromCharacterIndex(0);
+            Check(!advChar0.IsEmpty && advChar0.Left <= 8.5, $"Advanced TextBox leading inset too large: {advChar0.Left:F1}");
+            if (advPopup.Child is FrameworkElement popupChild)
+            {
+                SnapshotElement(popupChild, Path.Combine(outputPath, "advanced-popup-dark.png"));
+            }
+            advPopup.IsOpen = false;
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+
+            // Req 2: case-insensitive advanced search with mixed letter + pure numeric keywords
+            Get<ToggleButton>(window, "CaseSensitiveButton").IsChecked = false;
+            Get<ToggleButton>(window, "RegexButton").IsChecked = false;
+            await (Task)Call(window, "StartSearchAsync")!;
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+            var searchResults = Get<RangeObservableCollection<LogSearchResult>>(window, "_searchResults");
+            Check(searchResults.Count == 3 && searchResults[0].LineNumber == 2 && searchResults[1].LineNumber == 4 && searchResults[2].LineNumber == 5,
+                $"Case-insensitive advanced search expected 3 matches (2,4,5), got {searchResults.Count}");
+
+            // Req 3: pin lines out of order -> sorted ascending in right pane
+            window.TogglePinResult(searchResults[2], switchToPinnedTab: true); // line 5
+            window.TogglePinResult(searchResults[0], switchToPinnedTab: true); // line 2
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+            Check(Get<Border>(window, "SearchRightPane").Visibility == Visibility.Visible, "right pane opens when pinning");
+            Check(Get<TextBox>(window, "SideLineNumberBox").Text == "2\n5", "pinned lines sorted ascending chronologically");
+
+            // Req 4: Ctrl+F secondary search, ↑/↓ navigation, All button, and dual-tab switching
+            window.OpenResultFindBar();
+            Get<TextBox>(window, "ResultFindTextBox").Text = "404";
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+            Check(Get<Border>(window, "ResultFindBar").Visibility == Visibility.Visible, "floating result find bar opens");
+            Check(Get<TextBlock>(window, "ResultFindCountTextBlock").Text == "1/2", "result find counts matches");
+            window.NavigateResultFindMatch(1);
+            Check(Get<TextBlock>(window, "ResultFindCountTextBlock").Text == "2/2", "result find next match");
+            window.NavigateResultFindMatch(1);
+            Check(Get<TextBlock>(window, "ResultFindCountTextBlock").Text == "1/2", "result find wraps around");
+            window.CommitSecondarySearchAll();
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+            var pinnedTab = Get<ToggleButton>(window, "PinnedTabButton");
+            var secondaryTab = Get<ToggleButton>(window, "SecondarySearchTabButton");
+            Check(pinnedTab.Visibility == Visibility.Visible && secondaryTab.Visibility == Visibility.Visible &&
+                secondaryTab.IsChecked == true, "both pinned and secondary tabs visible with secondary active");
+            Check(Get<TextBox>(window, "SideLineNumberBox").Text == "2\n4", "secondary tab displays all matched lines");
+            Snapshot(window, Path.Combine(outputPath, "search-pane-dark.png"));
+
+            // Narrow width check with both panes & floating find bar visible
+            window.Width = 820;
+            window.UpdateLayout();
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+            Snapshot(window, Path.Combine(outputPath, "search-pane-narrow.png"));
+
+            // Light theme visual check (without writing user settings)
+            window.Width = 1100;
+            Call(window, "ApplyTheme", Enum.Parse(themeEnum, "Light"));
+            window.UpdateLayout();
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+            Snapshot(window, Path.Combine(outputPath, "search-pane-light.png"));
+            Call(window, "ApplyTheme", originalTheme);
+            window.UpdateLayout();
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+
+            // Switch back to Pinned tab and verify pins persist after a brand new primary search
+            Call(window, "PinnedTabButton_Click", pinnedTab, new RoutedEventArgs());
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+            Check(Get<TextBox>(window, "SideLineNumberBox").Text == "2\n5", "switching back to pinned tab shows pinned lines");
+            searchBox.Text = "in(404)";
+            await (Task)Call(window, "StartSearchAsync")!;
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+            Check(searchResults.Count == 2 && Get<TextBox>(window, "SideLineNumberBox").Text == "2\n5" &&
+                secondaryTab.Visibility == Visibility.Collapsed, "new pure-numeric case-insensitive search keeps pinned lines and clears secondary tab");
+            window.CloseResultFindBar();
+            Check(Get<Border>(window, "ResultFindBar").Visibility == Visibility.Collapsed, "closing find bar hides it");
+            Call(window, "ClearRightPaneButton_Click", Get<Button>(window, "ClearRightPaneButton"), new RoutedEventArgs());
+            await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+            Check(Get<Border>(window, "SearchRightPane").Visibility == Visibility.Collapsed, "clearing all pinned lines collapses right pane");
 
             dialog = new SshOpenDialog(window) { Left = -20000, Top = -20000, WindowStartupLocation = WindowStartupLocation.Manual, ShowActivated = false, ShowInTaskbar = false };
             dialog.Show();
@@ -134,6 +241,19 @@ internal static class SshUiSelfTest
         window.UpdateLayout();
         var bitmap = new RenderTargetBitmap((int)window.ActualWidth, (int)window.ActualHeight, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
         bitmap.Render(window);
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var stream = File.Create(path);
+        encoder.Save(stream);
+    }
+
+    private static void SnapshotElement(FrameworkElement element, string path)
+    {
+        element.UpdateLayout();
+        var width = Math.Max(1, (int)Math.Ceiling(element.ActualWidth));
+        var height = Math.Max(1, (int)Math.Ceiling(element.ActualHeight));
+        var bitmap = new RenderTargetBitmap(width, height, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+        bitmap.Render(element);
         var encoder = new PngBitmapEncoder();
         encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using var stream = File.Create(path);

@@ -19,6 +19,56 @@ internal static class SelfTest
             Check(await session.SearchAsync("error", false, false, default) == 2 && session.MatchLine(1) == 5, "ASCII ignore case");
             Check(await session.SearchAsync("error", false, true, default) == 1, "case sensitive");
             Check(await session.SearchAsync("in(error,warning);notin(retry)", false, false, default) == 2, "advanced include / exclude");
+            // Regression tests for case-insensitive advanced search with pure numeric / symbol / long keywords
+            var advPath = Path.Combine(directory, "adv-case.log");
+            var longPrefix = new string('A', 40);
+            var sb = new StringBuilder();
+            sb.AppendLine("INFO 100 boot");
+            sb.AppendLine("ERROR 404 not found");
+            sb.AppendLine("warn 200 retry");
+            sb.AppendLine("error 404 timeout");
+            sb.AppendLine("INFO 500 " + longPrefix.ToLowerInvariant() + "_9999");
+            for (var i = 0; i < 6000; i++) sb.AppendLine("filler line padding abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz");
+            sb.AppendLine("ERROR 404 tail_hit");
+            sb.AppendLine("ERROR 200 excluded_tail");
+            await File.WriteAllTextAsync(advPath, sb.ToString(), new UTF8Encoding(false));
+            using (var advSession = new LogSession(LogFileDocument.Open(advPath, LogTextEncoding.Utf8)))
+            {
+                Check(await advSession.SearchAsync("in(404)", false, false, default) == 3 &&
+                    advSession.MatchLine(0) == 2 && advSession.MatchLine(1) == 4 && advSession.MatchLine(2) == 6006,
+                    "advanced case-insensitive pure numeric include across >256KB");
+                Check(await advSession.SearchAsync("in(404)", false, true, default) == 3, "advanced case-sensitive pure numeric include");
+                Check(await advSession.SearchAsync("in(error,500);notin(200)", false, false, default) == 4,
+                    "advanced case-insensitive mixed letter+numeric include with numeric exclude");
+                Check(await advSession.SearchAsync("in(ERROR);notin(200)", false, true, default) == 2,
+                    "advanced case-sensitive letter include with numeric exclude");
+                Check(await advSession.SearchAsync("in(error);notin(RETRY)", false, false, default) == 4,
+                    "advanced case-insensitive letter exclude");
+                Check(await advSession.SearchAsync($"in({longPrefix}_9999)", false, false, default) == 1 && advSession.MatchLine(0) == 5,
+                    "advanced case-insensitive long (>=32B) pattern");
+                Check(await advSession.SearchAsync("notin(filler,200,100,404)", false, false, default) == 1 && advSession.MatchLine(0) == 5,
+                    "advanced case-insensitive exclude-only with numeric terms");
+
+                // Pinning & secondary search session tests
+                Check(await advSession.SearchAsync("in(error,500)", false, false, default) == 5, "primary search before pin/secondary");
+                Check(advSession.TogglePin(6006) && advSession.TogglePin(2), "toggle pin adds lines");
+                Check(advSession.PinnedCount == 2 && advSession.PinnedAt(0).LineNumber == 2 && advSession.PinnedAt(1).LineNumber == 6006,
+                    "pinned lines sorted ascending by line number");
+                Check(advSession.UpdateResultFindMatches("TIMEOUT", caseSensitive: false) == 1 &&
+                    advSession.MatchLine(advSession.ResultFindMatchAt(0)) == 4, "secondary find case-insensitive");
+                Check(advSession.UpdateResultFindMatches("TIMEOUT", caseSensitive: true) == 0, "secondary find case-sensitive");
+                Check(advSession.UpdateResultFindMatches("404", caseSensitive: false) == 3, "secondary find multi-match");
+                Check(advSession.CommitSecondarySearchAll() == 3 && advSession.SecondaryCount == 3 &&
+                    advSession.ActiveSideTab == SidePaneTab.SecondarySearch, "commit all populates secondary tab");
+                Check(await advSession.SearchAsync("boot", false, false, default) == 1, "new search runs cleanly");
+                Check(advSession.PinnedCount == 2 && advSession.PinnedAt(0).Text.Contains("ERROR 404"),
+                    "pinned lines persist across new search");
+                Check(advSession.SecondaryCount == 0 && advSession.ResultFindMatchCount == 0,
+                    "new search clears secondary results and find matches");
+                Check(!advSession.TogglePin(2) && advSession.PinnedCount == 1, "toggle pin removes existing line");
+                advSession.ClearPinned();
+                Check(advSession.PinnedCount == 0, "clear pinned empties list");
+            }
             Check(await session.SearchAsync("中文", false, false, default) == 1 && session.MatchLine(0) == 4, "Unicode");
             Check(await session.SearchAsync("^(ERROR|warning)", true, true, default) == 2, "regex");
             try { await session.SearchAsync("[", true, false, default); throw new Exception("Invalid regex accepted"); }
@@ -83,6 +133,10 @@ internal static class SelfTest
             Check(remoteSession.HasSourcePage(1, 5) && remoteSession.GetSourceLineText(4) == "中文错误", "remote source page fetch and cache");
             Check(await remoteSession.SearchAsync("in(error,warning);notin(retry)", false, false, default) == 2 &&
                 remoteSession.MatchCount == 2 && remoteSession.GetResultLineText(0) == "ERROR first", "remote advanced search and hydrated results");
+            Check(remoteSession.TogglePin(5) && remoteSession.TogglePin(2) && remoteSession.PinnedCount == 2 &&
+                remoteSession.PinnedAt(0).LineNumber == 2 && remoteSession.PinnedAt(0).Text == "ERROR first", "remote pinning snapshot");
+            Check(remoteSession.UpdateResultFindMatches("FIRST", caseSensitive: false) == 1 &&
+                remoteSession.CommitSecondarySearchAll() == 1 && remoteSession.SecondaryAt(0).LineNumber == 2, "remote secondary search");
             await File.AppendAllTextAsync(sshLogPath, " retry\nERROR appended\n", new UTF8Encoding(false));
             var remoteAppended = await remoteSession.RefreshAsync(default);
             Check(remoteAppended.HasNewContent && !remoteSession.HasSourcePage(1, 6) &&
@@ -123,11 +177,13 @@ internal static class SelfTest
             Check(Field<List<LogSession>>(viewer, "_sessions").Count == 2 && Field<LogSession>(viewer, "_current").Document.FilePath == first,
                 "duplicate file selects existing session");
             var split = Field<SplitContainer>(viewer, "_split");
+            var resultsSplit = Field<SplitContainer>(viewer, "_resultsSplit");
             var bar = Field<ToolStrip>(viewer, "_queryBar");
             viewer.PerformLayout();
             Check(bar.Parent == split.Panel2 && bar.Dock == DockStyle.Top &&
                 Field<DataGridView>(viewer, "_source").Parent == split.Panel1 &&
-                Field<DataGridView>(viewer, "_results").Top >= bar.Bottom, "search toolbar is above the lower result pane");
+                resultsSplit.Parent == split.Panel2 && resultsSplit.Top >= bar.Bottom &&
+                Field<DataGridView>(viewer, "_results").Parent == resultsSplit.Panel1, "search toolbar is above the lower result pane");
             Check(viewer.Controls.OfType<ToolStrip>().All(item => item is StatusStrip) &&
                 bar.Items.Cast<ToolStripItem>().All(item => item.Placement == ToolStripItemPlacement.Main), "one toolbar row with no top file toolbar");
             Check(bar.Items.OfType<ToolStripSeparator>().Count() == 4, "toolbar has five action groups");
@@ -145,8 +201,66 @@ internal static class SelfTest
                 }
             }
             Check(Field<ToolStripButton>(viewer, "_regex").Text == ".*" && Field<ToolStripButton>(viewer, "_case").Text == "Aa" &&
+                Field<ToolStripButton>(viewer, "_advanced").Enabled &&
                 Field<ToolStripButton>(viewer, "_ssh").Text == "SSH" && Field<ToolStripButton>(viewer, "_ssh").Enabled,
-                "search option symbols and SSH button match original LOGRAM");
+                "search option symbols, advanced button and SSH button match original LOGRAM");
+
+            // Test WinForms AdvancedSearchForm parsing & formatting
+            using (var advForm = new AdvancedSearchForm("in(error,404);notin(200)", dark: true))
+            {
+                Call(advForm, "Submit");
+                Check(advForm.QueryText == "in(error,404);notin(200)", "WinForms AdvancedSearchForm round-trips include/exclude query");
+            }
+
+            // Test pinning, Ctrl+F secondary search, All button and right-pane tab switching in ViewerForm
+            Call(viewer, "SelectSession", 0);
+            query.Text = "in(error,info)";
+            Pump((Task)Call(viewer, "SearchAsync")!);
+            Check(Field<LogSession>(viewer, "_current").MatchCount == 3, "UI advanced search returns 3 lines");
+            Check(resultsSplit.Panel2Collapsed, "right pane starts collapsed");
+            Call(viewer, "HandleResultsCellClick", new DataGridViewCellEventArgs(0, 2)); // pin line 3
+            Call(viewer, "HandleResultsCellClick", new DataGridViewCellEventArgs(0, 0)); // pin line 1
+            Check(!resultsSplit.Panel2Collapsed && Field<LogSession>(viewer, "_current").PinnedCount == 2 &&
+                Field<LogSession>(viewer, "_current").PinnedAt(0).LineNumber == 1 &&
+                Field<LogSession>(viewer, "_current").PinnedAt(1).LineNumber == 3, "clicking line numbers pins lines in ascending order");
+            // Open Ctrl+F find bar inside results
+            var findInput = Field<TextBox>(viewer, "_resultFindInput");
+            var findCount = Field<Label>(viewer, "_resultFindCount");
+            viewer.OpenResultFindBar();
+            Check(Field<LogSession>(viewer, "_current").IsResultFindOpen, "result find bar opens");
+            findInput.Text = "error";
+            Check(findCount.Text == "1/2", "result find counts case-insensitive matches");
+            viewer.NavigateResultFind(1);
+            Check(findCount.Text == "2/2", "result find navigates next");
+            viewer.NavigateResultFind(1);
+            Check(findCount.Text == "1/2", "result find wraps around");
+            viewer.CommitSecondarySearchAll();
+            var pinnedTabBtn = Field<Button>(viewer, "_pinnedTabBtn");
+            var secondaryTabBtn = Field<Button>(viewer, "_secondaryTabBtn");
+            Check(pinnedTabBtn.Text.Contains("2") && secondaryTabBtn.Text.Contains("2") &&
+                Field<LogSession>(viewer, "_current").ActiveSideTab == SidePaneTab.SecondarySearch &&
+                Field<LogSession>(viewer, "_current").SecondaryCount == 2,
+                "All button shows secondary tab alongside pinned tab");
+            // Switch tabs and verify click-to-jump updates highlighted source line
+            viewer.SelectSideTab(SidePaneTab.Pinned);
+            Check(Field<LogSession>(viewer, "_current").ActiveSideTab == SidePaneTab.Pinned, "switching to pinned tab works");
+            Call(viewer, "SideGrid_CellClick", Field<DataGridView>(viewer, "_sideGrid"), new DataGridViewCellEventArgs(1, 1));
+            Check(Field<long>(viewer, "_highlightedSourceLine") == 3, "clicking pinned line jumps and highlights source");
+            // Verify session switch isolates right pane & find bar
+            Call(viewer, "SelectSession", 1);
+            Check(resultsSplit.Panel2Collapsed && !Field<LogSession>(viewer, "_current").IsResultFindOpen, "session switch hides right pane and find bar for clean session");
+            Call(viewer, "SelectSession", 0);
+            Check(!resultsSplit.Panel2Collapsed && Field<LogSession>(viewer, "_current").IsResultFindOpen, "switching back restores right pane and find bar");
+            viewer.CloseResultFindBar();
+            Check(!Field<LogSession>(viewer, "_current").IsResultFindOpen && !resultsSplit.Panel2Collapsed, "closing find bar keeps right pane tabs");
+            // Clear both right tabs -> right pane collapses automatically
+            Call(viewer, "ClearActiveSideTab");
+            Check(!resultsSplit.Panel2Collapsed && Field<LogSession>(viewer, "_current").ActiveSideTab == SidePaneTab.SecondarySearch,
+                "clearing pinned switches to remaining secondary tab");
+            Call(viewer, "ClearActiveSideTab");
+            Check(resultsSplit.Panel2Collapsed, "clearing all right tabs auto-collapses right pane");
+            query.Text = "error";
+            Pump((Task)Call(viewer, "SearchAsync")!);
             Pump(viewer.OpenFileAsync(first, LogTextEncoding.Gbk));
             Check(Field<LogSession>(viewer, "_current").Document.EncodingKind == LogTextEncoding.Gbk, "host encoding changes cached document");
             Pump(viewer.OpenFileAsync(first, LogTextEncoding.Utf8));
