@@ -21,6 +21,8 @@ Latest releases: [LogRAM 1.4.0](https://github.com/HBZHSN/LogRAM/releases/tag/1.
 | CLI | Terminal queries, batch processing, counts, and JSON output | [Command line](#command-line) |
 | MCP | Repeated log searches and bounded reads from AI clients | [MCP server](#mcp-server) |
 
+The 1.4.0 project baseline is available in Chinese. [Product](docs/PRODUCT.md) · [Architecture](docs/ARCHITECTURE.md) · [Verification](docs/TEST_STYLE.md) · [Maintenance](AGENTS.md)
+
 <div align="center">
 
 <img src="docs/images/gui-light.png" alt="Standalone GUI in light mode: source log and search results" width="49%" />

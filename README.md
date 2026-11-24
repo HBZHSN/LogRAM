@@ -21,6 +21,8 @@ LogRAM 将日志完整加载到内存，并使用字节级搜索、SIMD、多核
 | CLI | 终端查询、批处理、结果计数和 JSON 输出 | [命令行](#命令行) |
 | MCP | AI 客户端反复查询日志并按行读取内容 | [MCP 服务](#mcp-服务) |
 
+1.4.0 的项目基线包含四个入口的使用范围、实现取舍和复验记录。 [产品](docs/PRODUCT.md) · [架构](docs/ARCHITECTURE.md) · [复验](docs/TEST_STYLE.md) · [进度与证据](docs/TASKS.md) · [维护指南](AGENTS.md)
+
 <div align="center">
 
 <img src="docs/images/gui-light.png" alt="独立 GUI 浅色主题：原文、搜索条件与结果上下文" width="49%" />
