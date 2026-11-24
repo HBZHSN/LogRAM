@@ -4,7 +4,7 @@
 
 | 部件 | 用途与使用约定 | 源码与说明 |
 | --- | --- | --- |
-| `MainWindow` | WPF 日志工作区，组织打开标签、原文页、搜索结果、键盘导航和内存状态。 | [XAML](../LogRAM/MainWindow.xaml) · [交互实现](../LogRAM/MainWindow.xaml.cs) · [GUI 使用](../README.md#gui-使用) |
-| `ViewerForm` | WinForms 宿主内工作区，接受 NPP 文件和主题命令，组织只读原文、结果和五组操作。 | [实现](../LogRAM.Npp.Viewer/ViewerForm.cs) · [插件用法](../LogRAM.Npp/README.md) |
+| `MainWindow` | WPF 日志工作区，组织打开标签、原文页、搜索结果、行号固定、结果内 `Ctrl+F` 查找、右侧双 Tab、键盘导航和内存状态。 | [XAML](../LogRAM/MainWindow.xaml) · [主交互](../LogRAM/MainWindow.xaml.cs) · [结果分栏与二次搜索](../LogRAM/MainWindow.SearchPane.cs) · [GUI 使用](../README.md#gui-使用) |
+| `ViewerForm` | WinForms 宿主内工作区，接受 NPP 文件和主题命令，组织只读原文、结果、行号固定、结果内 `Ctrl+F` 查找、右侧双 Tab 和五组操作。 | [实现](../LogRAM.Npp.Viewer/ViewerForm.cs) · [结果分栏与二次搜索](../LogRAM.Npp.Viewer/ViewerForm.SearchPane.cs) · [高级搜索弹窗](../LogRAM.Npp.Viewer/AdvancedSearchForm.cs) · [插件用法](../LogRAM.Npp/README.md) |
 | `SshOpenDialog` 和 `SshOpenForm` | 各入口选择 SSH 主机、连接、按前缀浏览并打开路径。对话框释放未交给文档的连接。 | [WPF](../LogRAM/SshOpenDialog.cs) · [WinForms](../LogRAM.Npp.Viewer/SshOpenForm.cs) · [SSH 流程](impl-spec/002-ssh-log.md) |
 | `ToolbarIcons` | NPP 查看器工具栏按当前前景色生成操作图标。按钮表意由查看器的 Tooltip 和无障碍名称提供。 | [绘制](../LogRAM.Npp.Viewer/ToolbarIcons.cs) · [按钮语义](../LogRAM.Npp.Viewer/ViewerForm.cs) |
