@@ -202,6 +202,63 @@ public sealed class LogFileDocument : ILogDocument
         return DecodeLine(_lineStarts[lineIndex], GetLineEndOffset(lineIndex));
     }
 
+    internal LineTextMatcher CreateLineTextMatcher(string pattern, bool caseSensitive)
+    {
+        return new LineTextMatcher(_encoding, pattern, caseSensitive);
+    }
+
+    internal readonly struct LineTextMatcher
+    {
+        private readonly string _pattern;
+        private readonly byte[] _patternBytes;
+        private readonly bool _useExactBytes;
+        private readonly bool _needsDecode;
+
+        internal LineTextMatcher(Encoding encoding, string pattern, bool caseSensitive)
+        {
+            _pattern = pattern;
+            _patternBytes = string.IsNullOrEmpty(pattern) ? Array.Empty<byte>() : encoding.GetBytes(pattern);
+            _needsDecode = !caseSensitive && ContainsNonAscii(_patternBytes);
+            _useExactBytes = caseSensitive || !ContainsAsciiLetter(_patternBytes);
+        }
+
+        internal bool Matches(LogFileDocument document, long lineNumber)
+        {
+            if (_pattern.Length == 0 || document._lineStarts.Count == 0 || lineNumber < 1 || lineNumber > document._lineStarts.Count)
+            {
+                return false;
+            }
+
+            var lineIndex = (int)(lineNumber - 1);
+            var start = document._lineStarts[lineIndex];
+            var next = document.GetLineEndOffset(lineIndex);
+            if (next > start && document.GetByte(next - 1) == (byte)'\n')
+            {
+                next--;
+            }
+
+            if (next > start && document.GetByte(next - 1) == (byte)'\r')
+            {
+                next--;
+            }
+
+            if (start == 0 && next - start >= 3 &&
+                document.GetByte(0) == 0xEF && document.GetByte(1) == 0xBB && document.GetByte(2) == 0xBF)
+            {
+                start = 3;
+            }
+
+            if (_needsDecode)
+            {
+                return document.DecodeLine(start, next).Contains(_pattern, StringComparison.OrdinalIgnoreCase);
+            }
+
+            return _useExactBytes
+                ? document.ContainsBytes(start, next, _patternBytes)
+                : document.ContainsBytesAsciiIgnoreCase(start, next, _patternBytes);
+        }
+    }
+
     public long GetOffsetForLine(long lineNumber)
     {
         if (_lineStarts.Count == 0)
@@ -533,7 +590,7 @@ public sealed class LogFileDocument : ILogDocument
                 return new LogSearchSummary(0);
             }
 
-            return RunAdvancedSearch(includes, excludes, caseSensitive, onBatch, progress, cancellationToken);
+            return RunAdvancedSearch(includes, excludes, onBatch, progress, cancellationToken);
         }, cancellationToken);
     }
 
@@ -573,14 +630,13 @@ public sealed class LogFileDocument : ILogDocument
         }
 
         return Task.Run(
-            () => SearchAdvancedLineRange(firstLineNumber, lastLineNumber, includes, excludes, caseSensitive, onBatch, cancellationToken),
+            () => SearchAdvancedLineRange(firstLineNumber, lastLineNumber, includes, excludes, onBatch, cancellationToken),
             cancellationToken);
     }
 
     private LogSearchSummary RunAdvancedSearch(
         AdvancedPattern[] includes,
         AdvancedPattern[] excludes,
-        bool caseSensitive,
         Action<IReadOnlyList<LogSearchResult>> onBatch,
         IProgress<LogSearchProgress>? progress,
         CancellationToken cancellationToken)
@@ -599,7 +655,7 @@ public sealed class LogFileDocument : ILogDocument
         Parallel.For(0, _chunks.Count, parallelOptions, chunkIndex =>
         {
             var chunkLength = GetChunkDataLength(chunkIndex);
-            ScanChunkAdvanced(chunkIndex, chunkLength, includes, excludes, caseSensitive, includeHit, excludeHit, cancellationToken);
+            ScanChunkAdvanced(chunkIndex, chunkLength, includes, excludes, includeHit, excludeHit, cancellationToken);
 
             var done = Interlocked.Add(ref scannedBytes, chunkLength);
             progress?.Report(new LogSearchProgress(done, FileSize, 0));
@@ -709,7 +765,6 @@ public sealed class LogFileDocument : ILogDocument
         long? lastLineNumber,
         AdvancedPattern[] includes,
         AdvancedPattern[] excludes,
-        bool caseSensitive,
         Action<IReadOnlyList<LogSearchResult>> onBatch,
         CancellationToken cancellationToken)
     {
@@ -737,7 +792,7 @@ public sealed class LogFileDocument : ILogDocument
 
             var start = _lineStarts[lineIndex];
             var next = GetLineEndOffset(lineIndex);
-            if (!IsAdvancedSearchMatch(start, next, includes, excludes, caseSensitive))
+            if (!IsAdvancedSearchMatch(start, next, includes, excludes))
             {
                 continue;
             }
@@ -763,13 +818,12 @@ public sealed class LogFileDocument : ILogDocument
         long start,
         long next,
         AdvancedPattern[] includes,
-        AdvancedPattern[] excludes,
-        bool caseSensitive)
+        AdvancedPattern[] excludes)
     {
         var hasInclude = includes.Length == 0;
         foreach (var include in includes)
         {
-            if (ContainsPattern(start, next, include.Bytes, caseSensitive))
+            if (ContainsPattern(start, next, include.Bytes, include.UseExactMatch))
             {
                 hasInclude = true;
                 break;
@@ -783,7 +837,7 @@ public sealed class LogFileDocument : ILogDocument
 
         foreach (var exclude in excludes)
         {
-            if (ContainsPattern(start, next, exclude.Bytes, caseSensitive))
+            if (ContainsPattern(start, next, exclude.Bytes, exclude.UseExactMatch))
             {
                 return false;
             }
@@ -802,7 +856,6 @@ public sealed class LogFileDocument : ILogDocument
         int chunkLength,
         AdvancedPattern[] includes,
         AdvancedPattern[] excludes,
-        bool caseSensitive,
         byte[] includeHit,
         byte[] excludeHit,
         CancellationToken cancellationToken)
@@ -824,23 +877,23 @@ public sealed class LogFileDocument : ILogDocument
 
             for (var p = 0; p < includes.Length; p++)
             {
-                ScanWindowForPattern(chunk, chunkLength, chunkBaseOffset, includes[p], caseSensitive, subStart, subEnd, ref includeLine[p], includeHit);
+                ScanWindowForPattern(chunk, chunkLength, chunkBaseOffset, includes[p], subStart, subEnd, ref includeLine[p], includeHit);
             }
 
             for (var p = 0; p < excludes.Length; p++)
             {
-                ScanWindowForPattern(chunk, chunkLength, chunkBaseOffset, excludes[p], caseSensitive, subStart, subEnd, ref excludeLine[p], excludeHit);
+                ScanWindowForPattern(chunk, chunkLength, chunkBaseOffset, excludes[p], subStart, subEnd, ref excludeLine[p], excludeHit);
             }
         }
 
         for (var p = 0; p < includes.Length; p++)
         {
-            ScanChunkTailForPattern(chunkIndex, chunkLength, includes[p], caseSensitive, ref includeLine[p], includeHit);
+            ScanChunkTailForPattern(chunkIndex, chunkLength, includes[p], ref includeLine[p], includeHit);
         }
 
         for (var p = 0; p < excludes.Length; p++)
         {
-            ScanChunkTailForPattern(chunkIndex, chunkLength, excludes[p], caseSensitive, ref excludeLine[p], excludeHit);
+            ScanChunkTailForPattern(chunkIndex, chunkLength, excludes[p], ref excludeLine[p], excludeHit);
         }
     }
 
@@ -849,7 +902,6 @@ public sealed class LogFileDocument : ILogDocument
         int chunkLength,
         long chunkBaseOffset,
         AdvancedPattern pattern,
-        bool caseSensitive,
         int windowStart,
         int windowEnd,
         ref int currentLineIndex,
@@ -863,7 +915,7 @@ public sealed class LogFileDocument : ILogDocument
             return;
         }
 
-        if (caseSensitive)
+        if (pattern.UseExactMatch)
         {
             var spanEnd = Math.Min(chunkLength, startLimit + bytes.Length);
             var searchOffset = windowStart;
@@ -924,7 +976,6 @@ public sealed class LogFileDocument : ILogDocument
         int chunkIndex,
         int chunkLength,
         AdvancedPattern pattern,
-        bool caseSensitive,
         ref int currentLineIndex,
         byte[] hit)
     {
@@ -941,7 +992,7 @@ public sealed class LogFileDocument : ILogDocument
                 break;
             }
 
-            if (!BytesMatchAt(absoluteOffset, bytes, caseSensitive))
+            if (!BytesMatchAt(absoluteOffset, bytes, pattern.UseExactMatch))
             {
                 continue;
             }
@@ -982,13 +1033,13 @@ public sealed class LogFileDocument : ILogDocument
 
             if (caseSensitive || !ContainsAsciiLetter(raw))
             {
-                patterns.Add(new AdvancedPattern(raw, default));
+                patterns.Add(new AdvancedPattern(raw, default, useExactMatch: true));
             }
             else
             {
                 var normalized = NormalizeAsciiPattern(raw);
                 var anchor = CreateAsciiSearchAnchors(normalized)[0];
-                patterns.Add(new AdvancedPattern(normalized, anchor));
+                patterns.Add(new AdvancedPattern(normalized, anchor, useExactMatch: false));
             }
         }
 
@@ -997,15 +1048,18 @@ public sealed class LogFileDocument : ILogDocument
 
     private readonly struct AdvancedPattern
     {
-        public AdvancedPattern(byte[] bytes, AsciiSearchAnchor anchor)
+        public AdvancedPattern(byte[] bytes, AsciiSearchAnchor anchor, bool useExactMatch)
         {
             Bytes = bytes;
             Anchor = anchor;
+            UseExactMatch = useExactMatch;
         }
 
         public byte[] Bytes { get; }
 
         public AsciiSearchAnchor Anchor { get; }
+
+        public bool UseExactMatch { get; }
     }
 
     private LogSearchSummary SearchPlainBytes(
