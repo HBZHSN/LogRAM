@@ -10,7 +10,7 @@
     <UseWPF>true</UseWPF>
     <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
     <Nullable>enable</Nullable>
-    <Version>1.4.0</Version>
+    <Version>1.5.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
